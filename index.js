@@ -294,7 +294,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
     .filter(s => s.url)
     .sort((a, b) => (qualityOrder[a.resolutions] ?? 99) - (qualityOrder[b.resolutions] ?? 99))
     .map(s => {
-      const proxyUrl = `http://127.0.0.1:${PORT}/proxy?url=${encodeURIComponent(s.url)}`;
+      const proxyUrl = `http://127.0.0.1:7001/proxy?url=${encodeURIComponent(s.url)}`;
       const sizeMB = s.size ? ` · ${Math.round(parseInt(s.size)/1024/1024)}MB` : "";
       const quality = s.resolutions ? `${s.resolutions}p` : "HD";
       return {
@@ -311,58 +311,52 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
 // ── Start ──────────────────────────────────────────────────
 const PORT = process.env.PORT || 7000;
+const PROXY_PORT = 7001;
 
-// Get the addon interface
-const addonInterface = builder.getInterface();
-
-// Create a custom HTTP server that handles both addon and proxy requests
-const server = http.createServer((req, res) => {
+// Proxy server on port 7001
+const proxyServer = http.createServer((req, res) => {
   const parsed = url.parse(req.url, true);
-
-  // Proxy endpoint: /proxy?url=<encoded_cdn_url>
   if (parsed.pathname === "/proxy" && parsed.query.url) {
     const targetUrl = decodeURIComponent(parsed.query.url);
-    console.log(`🎥 Proxy: ${targetUrl.substring(0, 80)}...`);
-
+    console.log(`🎥 Proxy: ${targetUrl.substring(0, 60)}...`);
     const targetParsed = url.parse(targetUrl);
     const lib = targetParsed.protocol === "https:" ? https : http;
-
     const proxyReq = lib.request({
       hostname: targetParsed.hostname,
       path: targetParsed.path,
-      method: req.method || "GET",
+      method: "GET",
       headers: {
         "Referer": "https://fmoviesunblocked.net/",
-        "Origin":  "https://fmoviesunblocked.net",
+        "Origin": "https://fmoviesunblocked.net",
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
         "Range": req.headers["range"] || "",
       }
     }, (proxyRes) => {
-      res.writeHead(proxyRes.statusCode, {
+      const headers = {
         "Content-Type": proxyRes.headers["content-type"] || "video/mp4",
-        "Content-Length": proxyRes.headers["content-length"] || "",
-        "Content-Range": proxyRes.headers["content-range"] || "",
         "Accept-Ranges": "bytes",
         "Access-Control-Allow-Origin": "*",
-      });
+      };
+      if (proxyRes.headers["content-length"]) headers["Content-Length"] = proxyRes.headers["content-length"];
+      if (proxyRes.headers["content-range"]) headers["Content-Range"] = proxyRes.headers["content-range"];
+      res.writeHead(proxyRes.statusCode, headers);
       proxyRes.pipe(res);
     });
-
     proxyReq.on("error", (err) => {
       console.error("Proxy error:", err.message);
-      res.writeHead(500);
-      res.end("Proxy error");
+      res.writeHead(500); res.end("Proxy error");
     });
-
     proxyReq.end();
-    return;
+  } else {
+    res.writeHead(404); res.end("Not found");
   }
-
-  // All other requests go to the addon SDK handler
-  addonInterface.handler(req, res);
 });
 
-server.listen(PORT, () => {
-  getCookies();
-  console.log(`\n🎬 MovieBox v5\n📡 http://localhost:${PORT}/manifest.json\n`);
+proxyServer.listen(PROXY_PORT, () => {
+  console.log(`🔀 Proxy server on port ${PROXY_PORT}`);
 });
+
+// Addon server on port 7000
+serveHTTP(builder.getInterface(), { port: PORT });
+getCookies();
+console.log(`\n🎬 MovieBox v5\n📡 http://localhost:${PORT}/manifest.json\n`);
