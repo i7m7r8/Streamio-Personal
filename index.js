@@ -1,3 +1,4 @@
+const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
 const axios = require("axios");
 const http = require("http");
 const https = require("https");
@@ -15,6 +16,7 @@ const CONFIG = {
 };
 
 const PORT = process.env.PORT || 7000;
+const PROXY_PORT = 7001;
 
 // ── Cache ──────────────────────────────────────────────────
 const cache = new Map();
@@ -138,7 +140,7 @@ function normalizePoster(url) {
   return url.startsWith("http") ? url : `https://pbcdnw.aoneroom.com${url}`;
 }
 
-function toStremioMeta(item, type) {
+function toMeta(item, type) {
   const subjectId = String(item.subjectId || "");
   if (item.detailPath) detailPathCache.set(subjectId, item.detailPath);
   itemCache.set(subjectId, item);
@@ -160,59 +162,57 @@ function parseId(id) {
   return m ? { type: m[1], subjectId: m[2] } : null;
 }
 
-function jsonResp(res, data) {
-  res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
-  res.end(JSON.stringify(data));
-}
+// ── Manifest ───────────────────────────────────────────────
+const manifest = {
+  id: "community.movieboxph",
+  version: "8.0.0",
+  name: "MovieBox",
+  description: "MovieBox — Movies & Series",
+  logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
+  catalogs: [
+    { type: "movie",  id: "mbx_movies", name: "MovieBox Movies",
+      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+    { type: "series", id: "mbx_series", name: "MovieBox Series",
+      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+  ],
+  resources: ["catalog", "meta", "stream"],
+  types: ["movie", "series"],
+  idPrefixes: ["mbx_"],
+};
 
-// ── Route handlers ─────────────────────────────────────────
-async function handleManifest(res) {
-  jsonResp(res, {
-    id: "community.movieboxph", version: "7.0.0",
-    name: "MovieBox", description: "MovieBox — Movies & Series",
-    logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
-    catalogs: [
-      { type: "movie",  id: "mbx_movies", name: "MovieBox Movies",
-        extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
-      { type: "series", id: "mbx_series", name: "MovieBox Series",
-        extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
-    ],
-    resources: ["catalog", "meta", "stream"],
-    types: ["movie", "series"],
-    idPrefixes: ["mbx_"],
-    behaviorHints: { adult: false, p2p: false },
-  });
-}
+const builder = new addonBuilder(manifest);
 
-async function handleCatalog(type, extra, res) {
-  console.log(`📋 Catalog type=${type}`, extra.search ? `search=${extra.search}` : "trending");
+// ── Catalog ────────────────────────────────────────────────
+builder.defineCatalogHandler(async ({ type, id, extra }) => {
+  console.log(`📋 Catalog type=${type}`, extra?.search ? `search=${extra.search}` : "browse");
   const subjectType = type === "series" ? 2 : 1;
-  const skip = parseInt(extra.skip || 0);
+  const skip = parseInt(extra?.skip || 0);
   const page = Math.floor(skip / CONFIG.PAGE_SIZE) + 1;
   let items = [];
-  if (extra.search) {
+
+  if (extra?.search) {
     const data = await apiPost("/subject/search", { keyword: extra.search, page: String(page), perPage: CONFIG.PAGE_SIZE });
     items = (data?.items || []).filter(i => i.subjectType === subjectType);
   } else if (type === "series") {
-    // Trending only returns series
     const data = await apiGet("/subject/trending");
     items = (data?.subjectList || []).filter(i => i.subjectType === 2);
   } else {
-    // Movies: use broad search with common keywords rotated by page
     const keywords = ["the","a","man","love","war","night","dead","dark","last","world"];
     const keyword = keywords[(page - 1) % keywords.length];
-    const data = await apiPost("/subject/search", { keyword, page: String(page), perPage: CONFIG.PAGE_SIZE });
+    const data = await apiPost("/subject/search", { keyword, page: "1", perPage: CONFIG.PAGE_SIZE });
     items = (data?.items || []).filter(i => i.subjectType === 1);
   }
-  const metas = items.filter(i => i.subjectId).map(i => toStremioMeta(i, type));
-  console.log(`✅ ${metas.length} items`);
-  jsonResp(res, { metas });
-}
 
-async function handleMeta(type, id, res) {
+  const metas = items.filter(i => i.subjectId).map(i => toMeta(i, type));
+  console.log(`✅ ${metas.length} items`);
+  return { metas };
+});
+
+// ── Meta ───────────────────────────────────────────────────
+builder.defineMetaHandler(async ({ type, id }) => {
   console.log(`🎬 Meta: ${id}`);
   const parsed = parseId(id);
-  if (!parsed) { jsonResp(res, { meta: null }); return; }
+  if (!parsed) return { meta: null };
 
   let item = itemCache.get(parsed.subjectId) || null;
   if (!item) {
@@ -220,7 +220,7 @@ async function handleMeta(type, id, res) {
     item = (trendData?.subjectList || []).find(i => String(i.subjectId) === parsed.subjectId) || null;
   }
 
-  const meta = item ? toStremioMeta(item, type) : { id, type, name: id };
+  const meta = item ? toMeta(item, type) : { id, type, name: id };
   meta.id = id;
 
   if (type === "series") {
@@ -233,46 +233,55 @@ async function handleMeta(type, id, res) {
         meta.videos.push({ id: `${id}:${s}:${ep}`, title: `S${s}E${ep}`, season: s, episode: ep, released: new Date(0).toISOString() });
       }
     }
-    console.log(`📺 ${meta.videos.length} episodes for ${meta.name || id}`);
+    console.log(`📺 ${meta.videos.length} episodes`);
   }
-  jsonResp(res, { meta });
-}
+  return { meta };
+});
 
-async function handleStream(type, id, res) {
+// ── Stream ─────────────────────────────────────────────────
+builder.defineStreamHandler(async ({ type, id }) => {
   console.log(`🔗 Stream: ${id}`);
   const parts = id.split(":");
   const baseId = parts[0];
   const season = parts[1] !== undefined ? parseInt(parts[1]) : 0;
   const episode = parts[2] !== undefined ? parseInt(parts[2]) : 0;
   const parsed = parseId(baseId);
-  if (!parsed) { jsonResp(res, { streams: [] }); return; }
+  if (!parsed) return { streams: [] };
 
   const detailPath = detailPathCache.get(parsed.subjectId) || "";
   const se = type === "movie" ? 0 : season;
   const ep = type === "movie" ? 0 : episode;
 
   const rawStreams = await fetchStreams(parsed.subjectId, detailPath, se, ep);
-  if (!rawStreams.length) { console.warn("⚠️ No streams"); jsonResp(res, { streams: [] }); return; }
+  if (!rawStreams.length) { console.warn("⚠️ No streams"); return { streams: [] }; }
 
   const qualityOrder = { "1080": 0, "720": 1, "480": 2, "360": 3 };
   const streams = rawStreams
     .filter(s => s.url)
     .sort((a, b) => (qualityOrder[a.resolutions] ?? 99) - (qualityOrder[b.resolutions] ?? 99))
     .map(s => ({
-      url: `http://127.0.0.1:${PORT}/proxy?url=${encodeURIComponent(s.url)}`,
+      url: `http://127.0.0.1:${PROXY_PORT}/proxy?url=${encodeURIComponent(s.url)}`,
       name: "MovieBox",
       title: `${s.resolutions ? s.resolutions + "p" : "HD"}${s.size ? " · " + Math.round(parseInt(s.size) / 1024 / 1024) + "MB" : ""}`,
       behaviorHints: { notWebReady: false, bingeGroup: `mbx-${parsed.subjectId}` }
     }));
 
   console.log(`✅ ${streams.length} streams`);
-  jsonResp(res, { streams });
-}
+  return { streams };
+});
 
-function handleProxy(targetUrl, req, res) {
+// ── Proxy server (port 7001) ───────────────────────────────
+const proxyServer = http.createServer((req, res) => {
+  const qIdx = (req.url || "").indexOf("?");
+  const qs = qIdx >= 0 ? new URLSearchParams(req.url.slice(qIdx + 1)) : new URLSearchParams();
+  const targetUrl = qs.get("url");
+
+  if (!targetUrl) { res.writeHead(400); res.end("Missing url"); return; }
+
   console.log(`🎥 Proxy: ${targetUrl.slice(0, 70)}...`);
   const parsed = new URL(targetUrl);
   const lib = parsed.protocol === "https:" ? https : http;
+
   const proxyReq = lib.request({
     hostname: parsed.hostname,
     path: parsed.pathname + parsed.search,
@@ -296,74 +305,11 @@ function handleProxy(targetUrl, req, res) {
   });
   proxyReq.on("error", err => { console.error("Proxy error:", err.message); res.writeHead(500); res.end(); });
   proxyReq.end();
-}
-
-// ── HTTP Server ────────────────────────────────────────────
-const server = http.createServer(async (req, res) => {
-  const rawUrl = req.url || "/";
-  const qIdx = rawUrl.indexOf("?");
-  const pathname = qIdx >= 0 ? rawUrl.slice(0, qIdx) : rawUrl;
-  const qs = qIdx >= 0 ? new URLSearchParams(rawUrl.slice(qIdx + 1)) : new URLSearchParams();
-
-  // CORS preflight
-  if (req.method === "OPTIONS") {
-    res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*" });
-    res.end(); return;
-  }
-
-  res.setHeader("Access-Control-Allow-Origin", "*");
-
-  try {
-    // Proxy
-    if (pathname === "/proxy" && qs.get("url")) {
-      handleProxy(qs.get("url"), req, res); return;
-    }
-
-    // Manifest
-    if (pathname === "/manifest.json" || pathname === "/") {
-      await handleManifest(res); return;
-    }
-
-    // Catalog: /:type/catalog/:catalogId.json  or  /:type/catalog/:catalogId/:extra.json
-    const catalogMatch = pathname.match(/^\/(movie|series)\/catalog\/[^/]+(?:\/([^/]+))?\.json$/);
-    if (catalogMatch) {
-      const type = catalogMatch[1];
-      const extraStr = catalogMatch[2] || "";
-      const extra = {};
-      if (extraStr) {
-        extraStr.split("&").forEach(part => {
-          const [k, v] = part.split("=");
-          if (k) extra[decodeURIComponent(k)] = decodeURIComponent(v || "");
-        });
-      }
-      // Also check query params
-      if (qs.get("search")) extra.search = qs.get("search");
-      if (qs.get("skip")) extra.skip = qs.get("skip");
-      await handleCatalog(type, extra, res); return;
-    }
-
-    // Meta: /:type/meta/:id.json
-    const metaMatch = pathname.match(/^\/(movie|series)\/meta\/(.+)\.json$/);
-    if (metaMatch) {
-      await handleMeta(metaMatch[1], metaMatch[2], res); return;
-    }
-
-    // Stream: /:type/stream/:id.json
-    const streamMatch = pathname.match(/^\/(movie|series)\/stream\/(.+)\.json$/);
-    if (streamMatch) {
-      await handleStream(streamMatch[1], streamMatch[2], res); return;
-    }
-
-    res.writeHead(404, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Not found", path: pathname }));
-
-  } catch (err) {
-    console.error("Handler error:", err);
-    res.writeHead(500); res.end("Server error");
-  }
 });
 
-server.listen(PORT, () => {
-  getCookies();
-  console.log(`\n🎬 MovieBox v7\n📡 http://localhost:${PORT}/manifest.json\n`);
-});
+proxyServer.listen(PROXY_PORT, () => console.log(`🔀 Proxy on port ${PROXY_PORT}`));
+
+// ── Start addon ────────────────────────────────────────────
+serveHTTP(builder.getInterface(), { port: PORT });
+getCookies();
+console.log(`\n🎬 MovieBox v8\n📡 http://localhost:${PORT}/manifest.json\n`);
