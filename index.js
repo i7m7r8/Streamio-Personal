@@ -267,11 +267,11 @@ builder.defineStreamHandler(async ({ type, id }) => {
     .filter(s => s.url)
     .sort((a, b) => (qualityOrder[a.resolutions] ?? 99) - (qualityOrder[b.resolutions] ?? 99))
     .map(s => ({
-      url:   s.url,
+      url:   `http://127.0.0.1:${PORT}/proxy?url=${encodeURIComponent(s.url)}`,
       name:  "MovieBox",
       title: `${s.resolutions ? s.resolutions + "p" : "HD"}${s.size ? " · " + Math.round(parseInt(s.size)/1024/1024) + "MB" : ""}`,
       behaviorHints: {
-        notWebReady: true,
+        notWebReady: false,
         bingeGroup: `mbx-${parsed.subjectId}`,
       }
     }));
@@ -282,6 +282,63 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
 // ── Start ──────────────────────────────────────────────────
 const PORT = process.env.PORT || 7000;
-serveHTTP(builder.getInterface(), { port: PORT });
-getCookies();
-console.log(`\n🎬 MovieBox v6\n📡 http://localhost:${PORT}/manifest.json\n`);
+const http = require("http");
+const https = require("https");
+
+// Wrap addon in custom server that also handles /proxy
+const addonIface = builder.getInterface();
+
+// Monkey-patch: intercept requests before SDK handles them
+const origServer = addonIface.server;
+
+const server = http.createServer((req, res) => {
+  const reqUrl = req.url || "";
+
+  if (reqUrl.startsWith("/proxy?")) {
+    const qs = new URLSearchParams(reqUrl.slice(7));
+    const targetUrl = qs.get("url");
+    if (!targetUrl) { res.writeHead(400); res.end("Missing url"); return; }
+
+    console.log(`🎥 Proxy: ${targetUrl.slice(0, 70)}...`);
+    const parsed = new URL(targetUrl);
+    const lib = parsed.protocol === "https:" ? https : http;
+
+    const options = {
+      hostname: parsed.hostname,
+      path: parsed.pathname + parsed.search,
+      method: "GET",
+      headers: {
+        "Referer": "https://fmoviesunblocked.net/",
+        "Origin": "https://fmoviesunblocked.net",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
+        "Range": req.headers["range"] || "bytes=0-",
+      }
+    };
+
+    const proxyReq = lib.request(options, (proxyRes) => {
+      const headers = {
+        "Content-Type": proxyRes.headers["content-type"] || "video/mp4",
+        "Accept-Ranges": "bytes",
+        "Access-Control-Allow-Origin": "*",
+      };
+      if (proxyRes.headers["content-length"]) headers["Content-Length"] = proxyRes.headers["content-length"];
+      if (proxyRes.headers["content-range"])  headers["Content-Range"]  = proxyRes.headers["content-range"];
+      res.writeHead(proxyRes.statusCode, headers);
+      proxyRes.pipe(res);
+    });
+    proxyReq.on("error", err => { console.error("Proxy error:", err.message); res.writeHead(500); res.end(); });
+    req.pipe(proxyReq);
+    return;
+  }
+
+  // Delegate everything else to the addon SDK
+  // Try different method names the SDK might expose
+  if (addonIface.router) addonIface.router(req, res);
+  else if (addonIface.handler) addonIface.handler(req, res);
+  else { res.writeHead(404); res.end("Not found"); }
+});
+
+server.listen(PORT, () => {
+  getCookies();
+  console.log(`\n🎬 MovieBox v6\n📡 http://localhost:${PORT}/manifest.json\n`);
+});
