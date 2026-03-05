@@ -224,23 +224,31 @@ builder.defineMetaHandler(async ({ type, id }) => {
   const parsed = parseId(id);
   if (!parsed) return { meta: null };
 
-  // Search by subjectId to get real item data
+  // Try to find item: first check detailPath cache, then search trending, then keyword search
   let item = null;
-  const searchData = await apiPost("/subject/search", {
-    keyword: parsed.subjectId, page: "1", perPage: 5,
-  });
-  if (searchData?.items?.length > 0) {
-    item = searchData.items.find(i => String(i.subjectId) === parsed.subjectId)
-        || searchData.items[0];
+
+  // 1) Check trending cache
+  const trendData = await apiGet("/subject/trending");
+  const trendList = trendData?.subjectList || [];
+  item = trendList.find(i => String(i.subjectId) === parsed.subjectId);
+
+  // 2) If not in trending, try a broad search using the subjectId
+  if (!item) {
+    const searchData = await apiPost("/subject/search", {
+      keyword: parsed.subjectId, page: "1", perPage: 10,
+    });
+    if (searchData?.items?.length > 0) {
+      item = searchData.items.find(i => String(i.subjectId) === parsed.subjectId);
+    }
   }
 
-  // Fallback minimal meta
+  // 3) Fallback: minimal meta so streams still work
   if (!item) {
-    console.warn(`No item found for ${parsed.subjectId}`);
-    const meta = { id, type, name: "Unknown" };
+    console.warn(`No item found for ${parsed.subjectId}, using minimal meta`);
+    const meta = { id, type, name: id };
     if (type === "series") {
       meta.videos = [];
-      for (let ep = 1; ep <= 20; ep++)
+      for (let ep = 1; ep <= 30; ep++)
         meta.videos.push({ id: `${id}:1:${ep}`, title: `S1E${ep}`, season: 1, episode: ep });
     }
     return { meta };
