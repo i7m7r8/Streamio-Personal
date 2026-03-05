@@ -145,6 +145,7 @@ async function fetchStreams(subjectId, detailPath, se, ep) {
 
 // ── Helpers ────────────────────────────────────────────────
 const detailPathCache = new Map();
+const itemCache = new Map(); // subjectId -> full item object
 
 function normalizePoster(url) {
   if (!url) return null;
@@ -154,6 +155,7 @@ function normalizePoster(url) {
 function toMeta(item, type) {
   const subjectId = String(item.subjectId || "");
   if (item.detailPath) detailPathCache.set(subjectId, item.detailPath);
+  itemCache.set(subjectId, item); // cache for meta lookups
   return {
     id:         `mbx_${type}_${subjectId}`,
     type,
@@ -224,22 +226,14 @@ builder.defineMetaHandler(async ({ type, id }) => {
   const parsed = parseId(id);
   if (!parsed) return { meta: null };
 
-  // Try to find item: first check detailPath cache, then search trending, then keyword search
-  let item = null;
+  // Try to find item: check itemCache first (populated by catalog), then trending, then search
+  let item = itemCache.get(parsed.subjectId) || null;
 
-  // 1) Check trending cache
-  const trendData = await apiGet("/subject/trending");
-  const trendList = trendData?.subjectList || [];
-  item = trendList.find(i => String(i.subjectId) === parsed.subjectId);
-
-  // 2) If not in trending, try a broad search using the subjectId
+  // 2) Check trending
   if (!item) {
-    const searchData = await apiPost("/subject/search", {
-      keyword: parsed.subjectId, page: "1", perPage: 10,
-    });
-    if (searchData?.items?.length > 0) {
-      item = searchData.items.find(i => String(i.subjectId) === parsed.subjectId);
-    }
+    const trendData = await apiGet("/subject/trending");
+    const trendList = trendData?.subjectList || [];
+    item = trendList.find(i => String(i.subjectId) === parsed.subjectId) || null;
   }
 
   // 3) Fallback: minimal meta so streams still work
