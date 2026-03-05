@@ -193,9 +193,16 @@ async function handleCatalog(type, extra, res) {
   if (extra.search) {
     const data = await apiPost("/subject/search", { keyword: extra.search, page: String(page), perPage: CONFIG.PAGE_SIZE });
     items = (data?.items || []).filter(i => i.subjectType === subjectType);
-  } else {
+  } else if (type === "series") {
+    // Trending only returns series
     const data = await apiGet("/subject/trending");
-    items = (data?.subjectList || []).filter(i => i.subjectType === subjectType);
+    items = (data?.subjectList || []).filter(i => i.subjectType === 2);
+  } else {
+    // Movies: use broad search with common keywords rotated by page
+    const keywords = ["the","a","man","love","war","night","dead","dark","last","world"];
+    const keyword = keywords[(page - 1) % keywords.length];
+    const data = await apiPost("/subject/search", { keyword, page: String(page), perPage: CONFIG.PAGE_SIZE });
+    items = (data?.items || []).filter(i => i.subjectType === 1);
   }
   const metas = items.filter(i => i.subjectId).map(i => toStremioMeta(i, type));
   console.log(`✅ ${metas.length} items`);
