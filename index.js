@@ -1,8 +1,5 @@
 const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
 const axios = require("axios");
-const http = require("http");
-const https = require("https");
-const url = require("url");
 
 const CONFIG = {
   API_BASE:    "https://h5-api.aoneroom.com",
@@ -16,7 +13,7 @@ const CONFIG = {
   _cookieFetchedAt: 0,
 };
 
-// ── Cache (5 min TTL) ──────────────────────────────────────
+// ── Cache ──────────────────────────────────────────────────
 const cache = new Map();
 function cacheGet(key) {
   const e = cache.get(key);
@@ -26,39 +23,27 @@ function cacheGet(key) {
 }
 function cacheSet(key, data) { cache.set(key, { data, ts: Date.now() }); }
 
-// ── Cookie management ──────────────────────────────────────
+// ── Cookies ────────────────────────────────────────────────
 async function getCookies() {
-  if (CONFIG._cookies !== null && (Date.now() - CONFIG._cookieFetchedAt < 30 * 60 * 1000)) {
+  if (CONFIG._cookies !== null && (Date.now() - CONFIG._cookieFetchedAt < 30 * 60 * 1000))
     return CONFIG._cookies;
-  }
   try {
     const res = await axios.get(
       `${CONFIG.STREAM_HOST}/wefeed-h5-bff/app/get-latest-app-pkgs?app_name=moviebox`,
-      {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
-          "Accept": "application/json",
-          "X-Forwarded-For": CONFIG.PH_IP,
-          "X-Real-IP": CONFIG.PH_IP,
-          "CF-IPCountry": "PH",
-        },
-        timeout: 10000,
-      }
+      { headers: { "User-Agent": "Mozilla/5.0", "X-Forwarded-For": CONFIG.PH_IP, "X-Real-IP": CONFIG.PH_IP, "CF-IPCountry": "PH" }, timeout: 10000 }
     );
     const setCookie = res.headers["set-cookie"] || [];
-    CONFIG._cookies = setCookie.length > 0
-      ? setCookie.map(c => c.split(";")[0]).join("; ")
-      : "";
+    CONFIG._cookies = setCookie.length > 0 ? setCookie.map(c => c.split(";")[0]).join("; ") : "";
     CONFIG._cookieFetchedAt = Date.now();
     console.log(`🍪 Cookies: ${CONFIG._cookies || "(none)"}`);
   } catch (err) {
-    console.error("❌ Cookie fetch failed:", err.message);
+    console.error("Cookie fetch failed:", err.message);
     CONFIG._cookies = "";
   }
   return CONFIG._cookies;
 }
 
-// ── Catalog API client (h5-api.aoneroom.com) ───────────────
+// ── Catalog API ────────────────────────────────────────────
 const CATALOG_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36",
   "Accept": "application/json",
@@ -72,18 +57,11 @@ async function apiGet(endpoint, params = {}) {
   const cached = cacheGet(key);
   if (cached) return cached;
   try {
-    const res = await axios.get(url, {
-      params: { host: CONFIG.PAGE_HOST, ...params },
-      headers: CATALOG_HEADERS,
-      timeout: 15000
-    });
+    const res = await axios.get(url, { params: { host: CONFIG.PAGE_HOST, ...params }, headers: CATALOG_HEADERS, timeout: 15000 });
     if (res.data?.code !== 0) return null;
     cacheSet(key, res.data.data);
     return res.data.data;
-  } catch (err) {
-    console.error(`❌ GET [${endpoint}]:`, err.message);
-    return null;
-  }
+  } catch (err) { console.error(`GET [${endpoint}]:`, err.message); return null; }
 }
 
 async function apiPost(endpoint, body = {}) {
@@ -92,63 +70,84 @@ async function apiPost(endpoint, body = {}) {
   const cached = cacheGet(key);
   if (cached) return cached;
   try {
-    const res = await axios.post(url, { host: CONFIG.PAGE_HOST, ...body }, {
-      headers: { ...CATALOG_HEADERS, "Content-Type": "application/json" },
-      timeout: 15000
-    });
+    const res = await axios.post(url, { host: CONFIG.PAGE_HOST, ...body }, { headers: { ...CATALOG_HEADERS, "Content-Type": "application/json" }, timeout: 15000 });
     if (res.data?.code !== 0) return null;
     cacheSet(key, res.data.data);
     return res.data.data;
-  } catch (err) {
-    console.error(`❌ POST [${endpoint}]:`, err.message);
-    return null;
-  }
+  } catch (err) { console.error(`POST [${endpoint}]:`, err.message); return null; }
 }
 
-// ── Stream API client (h5.aoneroom.com) ───────────────────
+// ── Stream API ─────────────────────────────────────────────
 async function fetchStreams(subjectId, detailPath, se, ep) {
   const key = `stream_${subjectId}_${se}_${ep}`;
   const cached = cacheGet(key);
   if (cached) return cached;
-
   const cookies = await getCookies();
-  const params  = { subjectId, se, ep };
   const referer = `https://h5.aoneroom.com/movies/${detailPath || subjectId}`;
-
   try {
-    const res = await axios.get(
-      `${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/play`,
-      {
-        params,
-        headers: {
-          "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
-          "Accept": "application/json",
-          "Referer": referer,
-          "Cookie": cookies,
-          "X-Forwarded-For": CONFIG.PH_IP,
-          "X-Real-IP": CONFIG.PH_IP,
-          "CF-IPCountry": "PH",
-        },
-        timeout: 15000
-      }
-    );
+    const res = await axios.get(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/play`, {
+      params: { subjectId, se, ep },
+      headers: {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
+        "Accept": "application/json",
+        "Referer": referer,
+        "Cookie": cookies,
+        "X-Forwarded-For": CONFIG.PH_IP,
+        "X-Real-IP": CONFIG.PH_IP,
+        "CF-IPCountry": "PH",
+      },
+      timeout: 15000
+    });
     const d = res.data;
-    if (d?.code !== 0) {
-      console.error(`❌ Stream error: code=${d?.code} ${d?.reason} ${d?.message}`);
-      return [];
-    }
+    if (d?.code !== 0) { console.error(`Stream error: ${d?.code} ${d?.reason}`); return []; }
     const streams = d?.data?.streams || [];
     cacheSet(key, streams);
     return streams;
-  } catch (err) {
-    console.error("❌ Stream fetch failed:", err.message);
-    return [];
+  } catch (err) { console.error("Stream fetch failed:", err.message); return []; }
+}
+
+// ── Episode discovery ─────────────────────────────────────
+// Cache: subjectId -> { s1: 10, s2: 8, ... }
+const episodeCountCache = new Map();
+
+async function discoverEpisodes(subjectId, detailPath) {
+  const cacheKey = `eps_${subjectId}`;
+  const cached = episodeCountCache.get(cacheKey);
+  if (cached) return cached;
+
+  const result = {}; // season -> episode count
+  for (let s = 1; s <= 10; s++) {
+    // Binary-ish: try ep 1 first to check if season exists
+    const firstEp = await fetchStreams(subjectId, detailPath, s, 1);
+    if (!firstEp || firstEp.length === 0) break; // no more seasons
+
+    // Find last episode in this season
+    let lo = 1, hi = 1;
+    // Expand upper bound
+    while (true) {
+      const ep = await fetchStreams(subjectId, detailPath, s, hi + 10);
+      if (!ep || ep.length === 0) break;
+      hi += 10;
+      if (hi > 200) break; // safety limit
+    }
+    // Linear search from hi down
+    let lastEp = hi;
+    for (let e = hi; e >= lo; e--) {
+      const ep = await fetchStreams(subjectId, detailPath, s, e);
+      if (ep && ep.length > 0) { lastEp = e; break; }
+    }
+    result[s] = lastEp;
   }
+
+  if (Object.keys(result).length === 0) result[1] = 1;
+  episodeCountCache.set(cacheKey, result);
+  console.log(`📺 Episodes for ${subjectId}:`, result);
+  return result;
 }
 
 // ── Helpers ────────────────────────────────────────────────
 const detailPathCache = new Map();
-const itemCache = new Map(); // subjectId -> full item object
+const itemCache = new Map();
 
 function normalizePoster(url) {
   if (!url) return null;
@@ -158,18 +157,18 @@ function normalizePoster(url) {
 function toMeta(item, type) {
   const subjectId = String(item.subjectId || "");
   if (item.detailPath) detailPathCache.set(subjectId, item.detailPath);
-  itemCache.set(subjectId, item); // cache for meta lookups
+  itemCache.set(subjectId, item);
   return {
-    id:         `mbx_${type}_${subjectId}`,
+    id:          `mbx_${type}_${subjectId}`,
     type,
-    name:       item.title || "Unknown",
-    poster:     normalizePoster(item.cover?.url),
-    background: normalizePoster(item.stills?.url),
+    name:        item.title || "Unknown",
+    poster:      normalizePoster(item.cover?.url),
+    background:  normalizePoster(item.stills?.url),
     description: item.description || "",
-    year:       item.releaseDate ? parseInt(item.releaseDate.slice(0, 4)) : undefined,
-    genres:     item.genre ? item.genre.split(",").map(g => g.trim()) : [],
-    imdbRating: item.imdbRatingValue || undefined,
-    runtime:    item.duration ? `${Math.round(item.duration / 60)} min` : undefined,
+    year:        item.releaseDate ? parseInt(item.releaseDate.slice(0, 4)) : undefined,
+    genres:      item.genre ? item.genre.split(",").map(g => g.trim()) : [],
+    imdbRating:  item.imdbRatingValue || undefined,
+    runtime:     item.duration ? `${Math.round(item.duration / 60)} min` : undefined,
   };
 }
 
@@ -181,15 +180,13 @@ function parseId(id) {
 // ── Manifest ───────────────────────────────────────────────
 const manifest = {
   id:          "community.movieboxph",
-  version:     "5.0.0",
+  version:     "6.0.0",
   name:        "MovieBox",
-  description: "MovieBox — Movies & Series with direct MP4 streams",
+  description: "MovieBox — Movies & Series with direct streams",
   logo:        "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
-    { type: "movie",  id: "mbx_movies",  name: "MovieBox Movies",
-      extra: [{ name: "search" }, { name: "skip" }] },
-    { type: "series", id: "mbx_series",  name: "MovieBox Series",
-      extra: [{ name: "search" }, { name: "skip" }] },
+    { type: "movie",  id: "mbx_movies",  name: "MovieBox Movies",  extra: [{ name: "search" }, { name: "skip" }] },
+    { type: "series", id: "mbx_series",  name: "MovieBox Series",  extra: [{ name: "search" }, { name: "skip" }] },
   ],
   resources:  ["catalog", "meta", "stream"],
   types:      ["movie", "series"],
@@ -200,24 +197,19 @@ const builder = new addonBuilder(manifest);
 
 // ── Catalog ────────────────────────────────────────────────
 builder.defineCatalogHandler(async ({ type, id, extra }) => {
-  console.log(`📋 Catalog type=${type} id=${id}`, extra);
+  console.log(`📋 Catalog type=${type}`, extra?.search ? `search=${extra.search}` : "trending");
   const search      = extra?.search || "";
   const skip        = parseInt(extra?.skip || 0);
   const page        = Math.floor(skip / CONFIG.PAGE_SIZE) + 1;
   const subjectType = type === "series" ? 2 : 1;
-
   let items = [];
-
   if (search) {
-    const data = await apiPost("/subject/search", {
-      keyword: search, page: String(page), perPage: CONFIG.PAGE_SIZE,
-    });
+    const data = await apiPost("/subject/search", { keyword: search, page: String(page), perPage: CONFIG.PAGE_SIZE });
     items = (data?.items || []).filter(i => i.subjectType === subjectType);
   } else {
     const data = await apiGet("/subject/trending");
     items = (data?.subjectList || []).filter(i => i.subjectType === subjectType);
   }
-
   const metas = items.filter(i => i.subjectId).map(i => toMeta(i, type));
   console.log(`✅ ${metas.length} items`);
   return { metas };
@@ -229,53 +221,46 @@ builder.defineMetaHandler(async ({ type, id }) => {
   const parsed = parseId(id);
   if (!parsed) return { meta: null };
 
-  // Try to find item: check itemCache first (populated by catalog), then trending, then search
   let item = itemCache.get(parsed.subjectId) || null;
-
-  // 2) Check trending
   if (!item) {
     const trendData = await apiGet("/subject/trending");
-    const trendList = trendData?.subjectList || [];
-    item = trendList.find(i => String(i.subjectId) === parsed.subjectId) || null;
+    item = (trendData?.subjectList || []).find(i => String(i.subjectId) === parsed.subjectId) || null;
   }
 
-  // 3) Fallback: minimal meta so streams still work
-  if (!item) {
-    console.warn(`No item found for ${parsed.subjectId}, using minimal meta`);
-    const meta = { id, type, name: id };
-    if (type === "series") {
-      meta.videos = [];
-      for (let ep = 1; ep <= 30; ep++)
-        meta.videos.push({ id: `${id}:1:${ep}`, title: `S1E${ep}`, season: 1, episode: ep });
-    }
-    return { meta };
-  }
-
-  const meta = toMeta(item, type);
+  const meta = item ? toMeta(item, type) : { id, type, name: id };
   meta.id = id;
 
   if (type === "series") {
+    const detailPath = detailPathCache.get(parsed.subjectId) || "";
+    // Discover real episode counts
+    const episodeMap = await discoverEpisodes(parsed.subjectId, detailPath);
     meta.videos = [];
-    const maxSeason = Math.max(item.season || 1, 1);
-    for (let s = 1; s <= maxSeason; s++)
-      for (let ep = 1; ep <= 30; ep++)
-        meta.videos.push({ id: `${id}:${s}:${ep}`, title: `S${s}E${ep}`, season: s, episode: ep });
+    for (const [season, epCount] of Object.entries(episodeMap)) {
+      const s = parseInt(season);
+      for (let ep = 1; ep <= epCount; ep++) {
+        meta.videos.push({
+          id:      `${id}:${s}:${ep}`,
+          title:   `S${s}E${ep}`,
+          season:  s,
+          episode: ep,
+          released: new Date(0).toISOString(),
+        });
+      }
+    }
+    console.log(`📺 Built ${meta.videos.length} episodes for ${meta.name || id}`);
   }
 
-  console.log(`Meta OK: ${meta.name}`);
   return { meta };
 });
 
 // ── Stream ─────────────────────────────────────────────────
 builder.defineStreamHandler(async ({ type, id }) => {
   console.log(`🔗 Stream: ${id}`);
-
   const parts   = id.split(":");
   const baseId  = parts[0];
   const season  = parts[1] !== undefined ? parseInt(parts[1]) : 0;
   const episode = parts[2] !== undefined ? parseInt(parts[2]) : 0;
-
-  const parsed = parseId(baseId);
+  const parsed  = parseId(baseId);
   if (!parsed) return { streams: [] };
 
   const detailPath = detailPathCache.get(parsed.subjectId) || "";
@@ -283,27 +268,21 @@ builder.defineStreamHandler(async ({ type, id }) => {
   const ep = type === "movie" ? 0 : episode;
 
   const rawStreams = await fetchStreams(parsed.subjectId, detailPath, se, ep);
-
-  if (!rawStreams.length) {
-    console.warn("⚠️ No streams");
-    return { streams: [] };
-  }
+  if (!rawStreams.length) { console.warn("⚠️ No streams"); return { streams: [] }; }
 
   const qualityOrder = { "1080": 0, "720": 1, "480": 2, "360": 3 };
   const streams = rawStreams
     .filter(s => s.url)
     .sort((a, b) => (qualityOrder[a.resolutions] ?? 99) - (qualityOrder[b.resolutions] ?? 99))
-    .map(s => {
-      const proxyUrl = `http://127.0.0.1:7001/proxy?url=${encodeURIComponent(s.url)}`;
-      const sizeMB = s.size ? ` · ${Math.round(parseInt(s.size)/1024/1024)}MB` : "";
-      const quality = s.resolutions ? `${s.resolutions}p` : "HD";
-      return {
-        url:   proxyUrl,
-        name:  "MovieBox",
-        title: `${quality}${sizeMB}`,
-        behaviorHints: { notWebReady: false, bingeGroup: `mbx-${parsed.subjectId}` }
-      };
-    });
+    .map(s => ({
+      url:   s.url,
+      name:  "MovieBox",
+      title: `${s.resolutions ? s.resolutions + "p" : "HD"}${s.size ? " · " + Math.round(parseInt(s.size)/1024/1024) + "MB" : ""}`,
+      behaviorHints: {
+        notWebReady: true,
+        bingeGroup: `mbx-${parsed.subjectId}`,
+      }
+    }));
 
   console.log(`✅ ${streams.length} streams`);
   return { streams };
@@ -311,52 +290,6 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
 // ── Start ──────────────────────────────────────────────────
 const PORT = process.env.PORT || 7000;
-const PROXY_PORT = 7001;
-
-// Proxy server on port 7001
-const proxyServer = http.createServer((req, res) => {
-  const parsed = url.parse(req.url, true);
-  if (parsed.pathname === "/proxy" && parsed.query.url) {
-    const targetUrl = decodeURIComponent(parsed.query.url);
-    console.log(`🎥 Proxy: ${targetUrl.substring(0, 60)}...`);
-    const targetParsed = url.parse(targetUrl);
-    const lib = targetParsed.protocol === "https:" ? https : http;
-    const proxyReq = lib.request({
-      hostname: targetParsed.hostname,
-      path: targetParsed.path,
-      method: "GET",
-      headers: {
-        "Referer": "https://fmoviesunblocked.net/",
-        "Origin": "https://fmoviesunblocked.net",
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
-        "Range": req.headers["range"] || "",
-      }
-    }, (proxyRes) => {
-      const headers = {
-        "Content-Type": proxyRes.headers["content-type"] || "video/mp4",
-        "Accept-Ranges": "bytes",
-        "Access-Control-Allow-Origin": "*",
-      };
-      if (proxyRes.headers["content-length"]) headers["Content-Length"] = proxyRes.headers["content-length"];
-      if (proxyRes.headers["content-range"]) headers["Content-Range"] = proxyRes.headers["content-range"];
-      res.writeHead(proxyRes.statusCode, headers);
-      proxyRes.pipe(res);
-    });
-    proxyReq.on("error", (err) => {
-      console.error("Proxy error:", err.message);
-      res.writeHead(500); res.end("Proxy error");
-    });
-    proxyReq.end();
-  } else {
-    res.writeHead(404); res.end("Not found");
-  }
-});
-
-proxyServer.listen(PROXY_PORT, () => {
-  console.log(`🔀 Proxy server on port ${PROXY_PORT}`);
-});
-
-// Addon server on port 7000
 serveHTTP(builder.getInterface(), { port: PORT });
 getCookies();
-console.log(`\n🎬 MovieBox v5\n📡 http://localhost:${PORT}/manifest.json\n`);
+console.log(`\n🎬 MovieBox v6\n📡 http://localhost:${PORT}/manifest.json\n`);
