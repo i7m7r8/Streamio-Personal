@@ -294,7 +294,14 @@ builder.defineStreamHandler(async ({ type, id }) => {
       url:   s.url,
       name:  "MovieBox",
       title: `${s.resolutions ? s.resolutions + "p" : "HD"}${s.size ? " · " + Math.round(parseInt(s.size)/1024/1024) + "MB" : ""}`,
-      behaviorHints: { notWebReady: false, bingeGroup: `mbx-${parsed.subjectId}` }
+      behaviorHints: {
+        notWebReady: false,
+        bingeGroup:  `mbx-${parsed.subjectId}`,
+        headers: {
+          "Referer": "https://fmoviesunblocked.net/",
+          "Origin":  "https://fmoviesunblocked.net",
+        }
+      }
     }));
 
   console.log(`✅ ${streams.length} streams`);
