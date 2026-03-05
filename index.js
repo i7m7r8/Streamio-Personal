@@ -115,26 +115,18 @@ async function discoverEpisodes(subjectId, detailPath) {
   const cached = episodeCountCache.get(cacheKey);
   if (cached) return cached;
 
-  const result = {}; // season -> episode count
+  const result = {};
   for (let s = 1; s <= 10; s++) {
-    // Binary-ish: try ep 1 first to check if season exists
+    // Check if season exists
     const firstEp = await fetchStreams(subjectId, detailPath, s, 1);
-    if (!firstEp || firstEp.length === 0) break; // no more seasons
+    if (!firstEp || firstEp.length === 0) break;
 
-    // Find last episode in this season
-    let lo = 1, hi = 1;
-    // Expand upper bound
-    while (true) {
-      const ep = await fetchStreams(subjectId, detailPath, s, hi + 10);
-      if (!ep || ep.length === 0) break;
-      hi += 10;
-      if (hi > 200) break; // safety limit
-    }
-    // Linear search from hi down
-    let lastEp = hi;
-    for (let e = hi; e >= lo; e--) {
+    // Linearly find last episode (max 60 per season)
+    let lastEp = 1;
+    for (let e = 2; e <= 60; e++) {
       const ep = await fetchStreams(subjectId, detailPath, s, e);
-      if (ep && ep.length > 0) { lastEp = e; break; }
+      if (!ep || ep.length === 0) break;
+      lastEp = e;
     }
     result[s] = lastEp;
   }
