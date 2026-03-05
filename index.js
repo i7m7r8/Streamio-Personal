@@ -172,8 +172,10 @@ async function handleManifest(res) {
     name: "MovieBox", description: "MovieBox — Movies & Series",
     logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
     catalogs: [
-      { type: "movie",  id: "mbx_movies", name: "MovieBox Movies",  extra: [{ name: "search" }, { name: "skip" }] },
-      { type: "series", id: "mbx_series", name: "MovieBox Series",  extra: [{ name: "search" }, { name: "skip" }] },
+      { type: "movie",  id: "mbx_movies", name: "MovieBox Movies",
+        extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+      { type: "series", id: "mbx_series", name: "MovieBox Series",
+        extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
     ],
     resources: ["catalog", "meta", "stream"],
     types: ["movie", "series"],
