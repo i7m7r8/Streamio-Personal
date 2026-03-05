@@ -259,12 +259,23 @@ builder.defineStreamHandler(async ({ type, id }) => {
   const streams = rawStreams
     .filter(s => s.url)
     .sort((a, b) => (qualityOrder[a.resolutions] ?? 99) - (qualityOrder[b.resolutions] ?? 99))
-    .map(s => ({
-      url: `http://127.0.0.1:${PROXY_PORT}/proxy?url=${encodeURIComponent(s.url)}`,
-      name: "MovieBox",
-      title: `${s.resolutions ? s.resolutions + "p" : "HD"}${s.size ? " · " + Math.round(parseInt(s.size) / 1024 / 1024) + "MB" : ""}`,
-      behaviorHints: { notWebReady: false, bingeGroup: `mbx-${parsed.subjectId}` }
-    }));
+    .map(s => {
+      const sizeMB = s.size ? ` · ${Math.round(parseInt(s.size)/1024/1024)}MB` : "";
+      const quality = s.resolutions ? `${s.resolutions}p` : "HD";
+      // Try direct URL with externalPlayerUrl for VLC which supports headers
+      const directUrl = s.url;
+      const proxyUrl = `http://127.0.0.1:${PROXY_PORT}/proxy?url=${encodeURIComponent(s.url)}`;
+      return {
+        url: proxyUrl,
+        externalUrl: directUrl,
+        name: "MovieBox",
+        title: quality + sizeMB,
+        behaviorHints: {
+          notWebReady: false,
+          bingeGroup: `mbx-${parsed.subjectId}`,
+        }
+      };
+    });
 
   console.log(`✅ ${streams.length} streams`);
   return { streams };
@@ -278,7 +289,12 @@ const proxyServer = http.createServer((req, res) => {
 
   if (!targetUrl) { res.writeHead(400); res.end("Missing url"); return; }
 
-  console.log(`🎥 Proxy: ${targetUrl.slice(0, 70)}...`);
+  // For range requests (video seeking), redirect directly to CDN
+  // The CDN allows direct access WITH fmoviesunblocked referer
+  // Since we can't set referer on redirect, we must proxy
+  const range = req.headers["range"] || "";
+  console.log(`🎥 Proxy ${range ? "[range] " : ""}${targetUrl.slice(0, 60)}...`);
+
   const parsed = new URL(targetUrl);
   const lib = parsed.protocol === "https:" ? https : http;
 
@@ -290,20 +306,27 @@ const proxyServer = http.createServer((req, res) => {
       "Referer": "https://fmoviesunblocked.net/",
       "Origin": "https://fmoviesunblocked.net",
       "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
-      "Range": req.headers["range"] || "",
+      ...(range ? { "Range": range } : {}),
     }
   }, (proxyRes) => {
     const headers = {
       "Content-Type": proxyRes.headers["content-type"] || "video/mp4",
       "Accept-Ranges": "bytes",
       "Access-Control-Allow-Origin": "*",
+      "Cache-Control": "no-cache",
     };
     if (proxyRes.headers["content-length"]) headers["Content-Length"] = proxyRes.headers["content-length"];
     if (proxyRes.headers["content-range"])  headers["Content-Range"]  = proxyRes.headers["content-range"];
     res.writeHead(proxyRes.statusCode, headers);
-    proxyRes.pipe(res);
+    proxyRes.pipe(res, { end: true });
   });
-  proxyReq.on("error", err => { console.error("Proxy error:", err.message); res.writeHead(500); res.end(); });
+
+  proxyReq.on("error", err => {
+    console.error("Proxy error:", err.message);
+    if (!res.headersSent) { res.writeHead(500); res.end(); }
+  });
+
+  req.on("close", () => proxyReq.destroy());
   proxyReq.end();
 });
 
