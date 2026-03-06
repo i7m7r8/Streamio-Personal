@@ -121,6 +121,21 @@ async function fetchStreams(subjectId, detailPath, se, ep) {
   }
 }
 
+async function fetchCaptions(streamId, subjectId) {
+  await ensureCookies();
+  try {
+    const url = new URL(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/caption`);
+    url.searchParams.set("id", streamId);
+    url.searchParams.set("subjectId", subjectId);
+    const res = await fetch(url.toString(), {
+      headers: { ...BASE_HEADERS, "Cookie": buildCookieHeader(_cookies) }
+    });
+    const d = await res.json();
+    if (d?.code !== 0) return [];
+    return d.data?.captions || [];
+  } catch { return []; }
+}
+
 function normalizePoster(url) {
   if (!url) return null;
   return url.startsWith("http") ? url : `https://pbcdnw.aoneroom.com${url}`;
@@ -156,7 +171,7 @@ function jsonResp(data, status = 200) {
 }
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "14.2.0",
+  id: "community.movieboxph", version: "14.3.0",
   name: "MovieBox", description: "MovieBox — Movies & Series",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
@@ -300,15 +315,31 @@ export default async function handler(request) {
       if (!rawStreams.length) return jsonResp({ streams: [] });
 
       const qualityOrder = { "1080": 0, "720": 1, "480": 2, "360": 3 };
-      const streams = rawStreams
+      const sorted = rawStreams
         .filter(s => s.url)
-        .sort((a, b) => (qualityOrder[a.resolutions] ?? 99) - (qualityOrder[b.resolutions] ?? 99))
-        .map(s => ({
-          url: `https://${request.headers.get("host")}/proxy?url=${encodeURIComponent(s.url)}`,
+        .sort((a, b) => (qualityOrder[a.resolutions] ?? 99) - (qualityOrder[b.resolutions] ?? 99));
+
+      // Fetch captions from first stream
+      const captions = sorted.length > 0 ? await fetchCaptions(sorted[0].id, parsed.subjectId) : [];
+      const subtitles = captions.map(c => ({
+        id: c.id,
+        url: c.url,
+        lang: c.lan,
+        label: c.lanName,
+      }));
+
+      const host = request.headers.get("host");
+      const streams = sorted.map((s, i) => {
+        const quality = s.resolutions ? `${s.resolutions}p` : "HD";
+        const sizeMB = s.size ? ` · ${Math.round(parseInt(s.size)/1024/1024)}MB` : "";
+        return {
+          url: `https://${host}/proxy?url=${encodeURIComponent(s.url)}`,
           name: "MovieBox",
-          title: `${s.resolutions ? s.resolutions + "p" : "HD"}${s.size ? " · " + Math.round(parseInt(s.size)/1024/1024) + "MB" : ""}`,
+          title: `${quality}${sizeMB} · Source ${i + 1}`,
+          subtitles,
           behaviorHints: { notWebReady: true, bingeGroup: `mbx-${parsed.subjectId}` }
-        }));
+        };
+      });
 
       return jsonResp({ streams });
     }
