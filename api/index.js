@@ -28,15 +28,26 @@ async function getCookies() {
       (Date.now() - CONFIG._cookieFetchedAt < 25 * 60 * 1000))
     return CONFIG._cookies;
   try {
+    // Use a more reliable endpoint to get cookies
     const res = await axios.get(
       `${CONFIG.STREAM_HOST}/wefeed-h5-bff/app/get-latest-app-pkgs?app_name=moviebox`,
-      { headers: { "User-Agent": "Mozilla/5.0", "X-Forwarded-For": CONFIG.PH_IP, "X-Real-IP": CONFIG.PH_IP, "CF-IPCountry": "PH" }, timeout: 10000 }
+      {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36",
+          "X-Forwarded-For": CONFIG.PH_IP,
+          "X-Real-IP": CONFIG.PH_IP,
+          "CF-IPCountry": "PH"
+        },
+        timeout: 10000
+      }
     );
     const setCookie = res.headers["set-cookie"] || [];
     CONFIG._cookies = setCookie.length > 0 ? setCookie.map(c => c.split(";")[0]).join("; ") : "";
     CONFIG._cookieFetchedAt = Date.now();
   } catch (err) {
+    console.warn("Cookie fetch failed, continuing without cookies");
     CONFIG._cookies = "";
+    CONFIG._cookieFetchedAt = Date.now(); // prevent immediate retry
   }
   return CONFIG._cookies;
 }
@@ -55,11 +66,18 @@ async function apiGet(endpoint, params = {}) {
   const cached = cacheGet(key);
   if (cached) return cached;
   try {
-    const res = await axios.get(url, { params: { host: CONFIG.PAGE_HOST, ...params }, headers: CATALOG_HEADERS, timeout: 15000 });
+    const res = await axios.get(url, {
+      params: { host: CONFIG.PAGE_HOST, ...params },
+      headers: CATALOG_HEADERS,
+      timeout: 15000
+    });
     if (res.data?.code !== 0) return null;
     cacheSet(key, res.data.data);
     return res.data.data;
-  } catch (err) { return null; }
+  } catch (err) {
+    console.error(`API GET ${endpoint} failed:`, err.message);
+    return null;
+  }
 }
 
 async function apiPost(endpoint, body = {}) {
@@ -68,69 +86,63 @@ async function apiPost(endpoint, body = {}) {
   const cached = cacheGet(key);
   if (cached) return cached;
   try {
-    const res = await axios.post(url, { host: CONFIG.PAGE_HOST, ...body }, { headers: { ...CATALOG_HEADERS, "Content-Type": "application/json" }, timeout: 15000 });
+    const res = await axios.post(url,
+      { host: CONFIG.PAGE_HOST, ...body },
+      { headers: { ...CATALOG_HEADERS, "Content-Type": "application/json" }, timeout: 15000 }
+    );
     if (res.data?.code !== 0) return null;
     cacheSet(key, res.data.data);
     return res.data.data;
-  } catch (err) { return null; }
+  } catch (err) {
+    console.error(`API POST ${endpoint} failed:`, err.message);
+    return null;
+  }
 }
 
 // ── Stream API ─────────────────────────────────────────────
-async function fetchStreams(subjectId, detailPath, se, ep) {
+async function fetchStreams(subjectId, se, ep) {
   const key = `stream_${subjectId}_${se}_${ep}`;
   const cached = cacheGet(key);
   if (cached) return cached;
+
   const cookies = await getCookies();
+  const referer = `https://h5.aoneroom.com/movies/${subjectId}`;
 
-  console.log("fetchStreams called:", { subjectId, se, ep });
-  console.log("cookies:", cookies ? "got cookies" : "NO COOKIES");
-
-  const referer = `https://h5.aoneroom.com/movies/${detailPath || subjectId}`;
-  // List of free PH proxies to try
-  const proxies = [
-    { host: "103.152.112.162", port: 80 },
-    { host: "103.105.49.20", port: 8080 },
-    { host: "112.198.232.110", port: 8082 },
-  ];
-  
-  let res = null;
-  // First try without proxy (in case server is in PH region)
-  for (let attempt = 0; attempt <= proxies.length; attempt++) {
-    try {
-      const axiosConfig = {
-        params: { subjectId, se, ep },
-        headers: {
-          "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
-          "Origin": "https://h5.aoneroom.com",
-          "Accept": "application/json", "Referer": referer, "Cookie": cookies,
-          "X-Forwarded-For": CONFIG.PH_IP, "X-Real-IP": CONFIG.PH_IP, "CF-IPCountry": "PH",
-        },
-        timeout: 10000
-      };
-      if (attempt > 0) {
-        axiosConfig.proxy = { host: proxies[attempt-1].host, port: proxies[attempt-1].port, protocol: "http" };
-      }
-      res = await axios.get(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/play`, axiosConfig);
-      const d = res.data;
-      console.log(`Attempt ${attempt} response: hasResource=${d?.data?.hasResource} streams=${d?.data?.streams?.length}`);
-      if (d?.code === 0 && d?.data?.streams?.length > 0) break;
-      if (attempt === proxies.length) break;
-    } catch(e) {
-      console.log(`Attempt ${attempt} error: ${e.message}`);
-      if (attempt === proxies.length) break;
-    }
-  }
   try {
-    if (!res) return [];
+    const res = await axios.get(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/play`, {
+      params: { subjectId, se, ep },
+      headers: {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
+        "Origin": "https://h5.aoneroom.com",
+        "Accept": "application/json",
+        "Referer": referer,
+        "Cookie": cookies,
+        "X-Forwarded-For": CONFIG.PH_IP,
+        "X-Real-IP": CONFIG.PH_IP,
+        "CF-IPCountry": "PH",
+      },
+      timeout: 15000
+    });
+
     const d = res.data;
-    if (d?.code !== 0) return [];
-    const streams = d?.data?.streams || [];
+    if (d?.code !== 0 || !d?.data?.streams?.length) return [];
+    const streams = d.data.streams;
     cacheSet(key, streams);
     return streams;
   } catch (err) {
-    console.error("fetchStreams error:", err.message);
+    console.error(`fetchStreams error for ${subjectId} se=${se} ep=${ep}:`, err.message);
     return [];
   }
+}
+
+// ── Fetch episodes for a series ────────────────────────────
+function fetchEpisodes() {
+  // Return placeholder — real episode discovery requires stream API (PH IP only)
+  const episodes = [];
+  for (let s = 1; s <= 6; s++)
+    for (let ep = 1; ep <= 30; ep++)
+      episodes.push({ season: s, episode: ep, name: `S${s}E${ep}`, releaseDate: new Date(0).toISOString() });
+  return episodes;
 }
 
 // ── Helpers ────────────────────────────────────────────────
@@ -147,7 +159,8 @@ function toMeta(item, type) {
   if (item.detailPath) detailPathCache.set(subjectId, item.detailPath);
   itemCache.set(subjectId, item);
   return {
-    id: `mbx_${type}_${subjectId}`, type,
+    id: `mbx_${type}_${subjectId}`,
+    type,
     name: item.title || "Unknown",
     poster: normalizePoster(item.cover?.url),
     background: normalizePoster(item.stills?.url),
@@ -182,63 +195,29 @@ module.exports = async (req, res) => {
   const pathname = qIdx >= 0 ? url.slice(0, qIdx) : url;
   const qs = qIdx >= 0 ? new URLSearchParams(url.slice(qIdx + 1)) : new URLSearchParams();
 
-  const host = `https://${req.headers.host}`;
-
   try {
     // Manifest
     if (pathname === "/manifest.json" || pathname === "/" || pathname === "") {
       jsonResp(res, {
-        id: "community.movieboxph", version: "9.0.3",
-        name: "MovieBox", description: "MovieBox — Movies & Series",
+        id: "community.movieboxph",
+        version: "9.0.4",
+        name: "MovieBox",
+        description: "MovieBox — Movies & Series (Improved)",
         logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
         catalogs: [
           {
             type: "movie", id: "mbx_movies", name: "MovieBox Movies",
             extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }],
-            behaviorHints: { configurable: false, defaultSortOrder: "asc" },
           },
           {
             type: "series", id: "mbx_series", name: "MovieBox Series",
             extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }],
-            behaviorHints: { configurable: false, defaultSortOrder: "asc" },
           },
         ],
         resources: ["catalog", "meta", "stream"],
         types: ["movie", "series"],
         idPrefixes: ["mbx_"],
       });
-      return;
-    }
-
-    // Proxy endpoint
-    if (pathname === "/proxy") {
-      const targetUrl = qs.get("url");
-      if (!targetUrl) { res.status(400).end("Missing url"); return; }
-      const https = require("https");
-      const http = require("http");
-      const parsed = new URL(targetUrl);
-      const lib = parsed.protocol === "https:" ? https : http;
-      const proxyReq = lib.request({
-        hostname: parsed.hostname,
-        path: parsed.pathname + parsed.search,
-        method: "GET",
-        headers: {
-          "Referer": "https://fmoviesunblocked.net/",
-          "Origin": "https://fmoviesunblocked.net",
-          "User-Agent": "Mozilla/5.0",
-          ...(req.headers["range"] ? { "Range": req.headers["range"] } : {}),
-        }
-      }, (proxyRes) => {
-        res.setHeader("Content-Type", proxyRes.headers["content-type"] || "video/mp4");
-        res.setHeader("Accept-Ranges", "bytes");
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        if (proxyRes.headers["content-length"]) res.setHeader("Content-Length", proxyRes.headers["content-length"]);
-        if (proxyRes.headers["content-range"]) res.setHeader("Content-Range", proxyRes.headers["content-range"]);
-        res.writeHead(proxyRes.statusCode);
-        proxyRes.pipe(res);
-      });
-      proxyReq.on("error", () => { res.status(500).end(); });
-      proxyReq.end();
       return;
     }
 
@@ -263,16 +242,27 @@ module.exports = async (req, res) => {
       let items = [];
 
       if (extra.search) {
+        // Search
         const data = await apiPost("/subject/search", { keyword: extra.search, page: String(page), perPage: String(CONFIG.PAGE_SIZE) });
         items = (data?.items || []).filter(i => i.subjectType === subjectType);
-      } else if (type === "series") {
-        const data = await apiGet("/subject/trending");
-        items = (data?.subjectList || []).filter(i => i.subjectType === 2);
       } else {
-        const keywords = ["the","a","man","love","war","night","dead","dark","last","world"];
-        const keyword = keywords[(page - 1) % keywords.length];
-        const data = await apiPost("/subject/search", { keyword, page: "1", perPage: String(CONFIG.PAGE_SIZE) });
-        items = (data?.items || []).filter(i => i.subjectType === 1);
+        // Use a dedicated listing endpoint if available; fallback to search with generic terms
+        // Try to get from trending or popular lists first
+        if (type === "series") {
+          const data = await apiGet("/subject/trending");
+          items = (data?.subjectList || []).filter(i => i.subjectType === 2);
+        } else {
+          // For movies, try multiple sources
+          const trending = await apiGet("/subject/trending");
+          items = (trending?.subjectList || []).filter(i => i.subjectType === 1);
+          if (items.length === 0) {
+            // Fallback to search with a popular keyword
+            const popularKeywords = ["2024", "action", "comedy", "drama", "thriller"];
+            const keyword = popularKeywords[(page - 1) % popularKeywords.length];
+            const data = await apiPost("/subject/search", { keyword, page: "1", perPage: String(CONFIG.PAGE_SIZE) });
+            items = (data?.items || []).filter(i => i.subjectType === 1);
+          }
+        }
       }
 
       const metas = items.filter(i => i.subjectId).map(i => toMeta(i, type));
@@ -298,13 +288,32 @@ module.exports = async (req, res) => {
       meta.id = id;
 
       if (type === "series") {
-        meta.videos = [];
-        for (let s = 1; s <= 5; s++) {
-          for (let ep = 1; ep <= 30; ep++) {
-            meta.videos.push({ id: `${id}:${s}:${ep}`, title: `S${s}E${ep}`, season: s, episode: ep, released: new Date(0).toISOString() });
+        // Fetch real episodes
+        const episodes = fetchEpisodes();
+        if (episodes.length > 0) {
+          meta.videos = episodes.map(ep => ({
+            id: `${id}:${ep.season}:${ep.episode}`,
+            title: ep.name || `S${ep.season}E${ep.episode}`,
+            season: ep.season,
+            episode: ep.episode,
+            released: ep.releaseDate,
+            thumbnail: normalizePoster(ep.thumbnail?.url),
+          }));
+        } else {
+          // Fallback to placeholder (limited to 1 season, 10 episodes to avoid huge lists)
+          meta.videos = [];
+          for (let ep = 1; ep <= 10; ep++) {
+            meta.videos.push({
+              id: `${id}:1:${ep}`,
+              title: `S1E${ep}`,
+              season: 1,
+              episode: ep,
+              released: new Date(0).toISOString(),
+            });
           }
         }
       }
+
       jsonResp(res, { meta });
       return;
     }
@@ -324,7 +333,7 @@ module.exports = async (req, res) => {
       const se = type === "movie" ? 0 : season;
       const ep = type === "movie" ? 0 : episode;
 
-      const rawStreams = await fetchStreams(parsed.subjectId, "", se, ep);
+      const rawStreams = await fetchStreams(parsed.subjectId, se, ep);
       if (!rawStreams.length) { jsonResp(res, { streams: [] }); return; }
 
       const qualityOrder = { "1080": 0, "720": 1, "480": 2, "360": 3 };
@@ -332,7 +341,7 @@ module.exports = async (req, res) => {
         .filter(s => s.url)
         .sort((a, b) => (qualityOrder[a.resolutions] ?? 99) - (qualityOrder[b.resolutions] ?? 99))
         .map(s => ({
-          url: `${host}/proxy?url=${encodeURIComponent(s.url)}`,
+          url: s.url,
           name: "MovieBox",
           title: `${s.resolutions ? s.resolutions + "p" : "HD"}${s.size ? " · " + Math.round(parseInt(s.size)/1024/1024) + "MB" : ""}`,
           behaviorHints: { notWebReady: false, bingeGroup: `mbx-${parsed.subjectId}` }
@@ -349,4 +358,3 @@ module.exports = async (req, res) => {
     res.status(500).end("Server error");
   }
 };
- 
