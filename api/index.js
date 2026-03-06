@@ -206,7 +206,7 @@ function jsonResp(data, status = 200) {
 }
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "14.4.0",
+  id: "community.movieboxph", version: "14.5.0",
   name: "MovieBox", description: "MovieBox — Movies & Series",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
@@ -278,10 +278,16 @@ export default async function handler(request) {
       const parsed = parseId(id);
       if (!parsed) return jsonResp({ meta: null });
 
-      let item = itemCache.get(parsed.subjectId) || null;
-      if (!item) {
-        const trendData = await apiGet("/subject/trending");
-        item = (trendData?.subjectList || []).find(i => String(i.subjectId) === parsed.subjectId) || null;
+      // Fetch full detail for real episode counts
+      const detail = await fetch(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/detail?subjectId=${parsed.subjectId}`, {
+        headers: { ...BASE_HEADERS, "Cookie": buildCookieHeader(_cookies) }
+      }).then(r => r.json()).catch(() => null);
+
+      const subjectData = detail?.data?.subject || null;
+      let item = itemCache.get(parsed.subjectId) || subjectData || null;
+      if (subjectData) {
+        if (subjectData.detailPath) detailPathCache.set(parsed.subjectId, subjectData.detailPath);
+        itemCache.set(parsed.subjectId, subjectData);
       }
 
       const meta = item ? toMeta(item, type) : { id, type, name: id };
@@ -289,9 +295,26 @@ export default async function handler(request) {
 
       if (type === "series") {
         meta.videos = [];
-        for (let s = 1; s <= 6; s++)
-          for (let ep = 1; ep <= 30; ep++)
-            meta.videos.push({ id: `${id}:${s}:${ep}`, title: `S${s}E${ep}`, season: s, episode: ep, released: new Date(0).toISOString() });
+        const seasons = detail?.data?.seasons || [];
+        if (seasons.length > 0) {
+          for (const season of seasons) {
+            const maxEp = season.maxEp || 1;
+            for (let ep = 1; ep <= maxEp; ep++) {
+              meta.videos.push({
+                id: `${id}:${season.se}:${ep}`,
+                title: `S${season.se}E${ep}`,
+                season: season.se,
+                episode: ep,
+                released: new Date(0).toISOString()
+              });
+            }
+          }
+        } else {
+          // Fallback if no season data
+          for (let s = 1; s <= 4; s++)
+            for (let ep = 1; ep <= 20; ep++)
+              meta.videos.push({ id: `${id}:${s}:${ep}`, title: `S${s}E${ep}`, season: s, episode: ep, released: new Date(0).toISOString() });
+        }
       }
       return jsonResp({ meta });
     }
