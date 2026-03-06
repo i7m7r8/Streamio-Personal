@@ -210,7 +210,7 @@ function jsonResp(data, status = 200) {
 }
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "15.8.0",
+  id: "community.movieboxph", version: "15.9.0",
   name: "MovieBox", description: "MovieBox — Movies & Series with Dubbed & Subtitles",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
@@ -284,19 +284,31 @@ export default async function handler(request) {
         const imdbId = id;
         const subjectType = type === "series" ? 2 : 1;
         try {
-          // Get title from Cinemeta (follows redirects)
+          // Get title from Cinemeta — try both types
           let title = null;
-          const cinemeta = await fetch(`https://cinemeta-live.strem.io/meta/${type}/${imdbId}.json`)
-            .then(r => r.json()).catch(() => null);
-          title = cinemeta?.meta?.name;
+          let resolvedType = type;
+          for (const t of [type, type === "series" ? "movie" : "series"]) {
+            const cinemeta = await fetch(`https://cinemeta-live.strem.io/meta/${t}/${imdbId}.json`)
+              .then(r => r.json()).catch(() => null);
+            if (cinemeta?.meta?.name) {
+              title = cinemeta.meta.name;
+              resolvedType = t;
+              break;
+            }
+          }
 
           if (!title) return jsonResp({ meta: null });
 
+          const resolvedSubjectType = resolvedType === "series" ? 2 : 1;
           const searchData = await apiPost("/subject/search", { keyword: title, page: "1", perPage: "8" });
-          const found = (searchData?.items || []).find(i => i.subjectType === subjectType);
+          const found = (searchData?.items || []).find(i => i.subjectType === resolvedSubjectType)
+                     || (searchData?.items || [])[0];
           if (!found) return jsonResp({ meta: null });
+          
+          // Update type to match resolved
+          const foundType = found.subjectType === 2 ? "series" : "movie";
 
-          id = `mbx_${type}_${found.subjectId}`;
+          id = `mbx_${foundType}_${found.subjectId}`;
           parsed = parseId(id);
           if (found.detailPath) detailPathCache.set(String(found.subjectId), found.detailPath);
           itemCache.set(String(found.subjectId), found);
