@@ -210,7 +210,7 @@ function jsonResp(data, status = 200) {
 }
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "15.7.0",
+  id: "community.movieboxph", version: "15.8.0",
   name: "MovieBox", description: "MovieBox — Movies & Series with Dubbed & Subtitles",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
@@ -284,20 +284,11 @@ export default async function handler(request) {
         const imdbId = id;
         const subjectType = type === "series" ? 2 : 1;
         try {
-          // Try multiple sources to get title
+          // Get title from Cinemeta (follows redirects)
           let title = null;
-
-          // Source 1: IMDB suggestions API
-          const imdbRes = await fetch(`https://v2.sg.media-imdb.com/suggestion/t/${imdbId}.json`)
+          const cinemeta = await fetch(`https://cinemeta-live.strem.io/meta/${type}/${imdbId}.json`)
             .then(r => r.json()).catch(() => null);
-          title = imdbRes?.d?.[0]?.l;
-
-          // Source 2: OMDB
-          if (!title) {
-            const omdb = await fetch(`https://www.omdbapi.com/?i=${imdbId}&apikey=trilogy`)
-              .then(r => r.json()).catch(() => null);
-            title = omdb?.Title;
-          }
+          title = cinemeta?.meta?.name;
 
           if (!title) return jsonResp({ meta: null });
 
