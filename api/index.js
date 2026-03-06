@@ -3,153 +3,162 @@ const axios = require("axios")
 
 const PORT = process.env.PORT || 7000
 
-const API = "https://h5-api.aoneroom.com/wefeed-h5api-bff"
+const API = "https://movieboxapi.simatwa.dev"
+
+function buildPoster(url) {
+    if (!url) return null
+    if (url.startsWith("http")) return url
+    return "https://image.tmdb.org/t/p/w500" + url
+}
 
 const manifest = {
-    id: "moviebox.community",
+    id: "community.moviebox",
     version: "1.0.0",
     name: "MovieBox",
-    description: "MovieBox movies and series",
-    resources: ["catalog", "meta", "stream"],
+    description: "MovieBox streaming addon",
     types: ["movie", "series"],
+    resources: ["catalog", "meta", "stream"],
     idPrefixes: ["mbx"],
     catalogs: [
-        { type: "movie", id: "moviebox_movies", name: "MovieBox Movies" },
-        { type: "series", id: "moviebox_series", name: "MovieBox Series" }
+        {
+            type: "movie",
+            id: "moviebox_movies",
+            name: "MovieBox Movies",
+            extra: [{ name: "search", isRequired: false }]
+        },
+        {
+            type: "series",
+            id: "moviebox_series",
+            name: "MovieBox Series",
+            extra: [{ name: "search", isRequired: false }]
+        }
     ]
 }
 
 const builder = new addonBuilder(manifest)
 
-async function apiGet(endpoint, params = {}) {
+builder.defineCatalogHandler(async ({ type, extra }) => {
 
-    const res = await axios.get(API + endpoint, {
-        params: { host: "h5.aoneroom.com", ...params },
-        headers: {
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://h5.aoneroom.com/"
+    try {
+
+        let url
+
+        if (extra && extra.search) {
+            url = `${API}/search?q=${encodeURIComponent(extra.search)}`
+        } else {
+            url = `${API}/trending`
         }
-    })
 
-    if (res.data.code !== 0) return null
+        const res = await axios.get(url)
 
-    return res.data.data
-}
+        const items = res.data.results || []
 
-function poster(url) {
-    if (!url) return null
-    if (url.startsWith("http")) return url
-    return "https://pbcdnw.aoneroom.com" + url
-}
+        const metas = items
+            .filter(i => type === "movie" ? i.type === "movie" : i.type === "series")
+            .map(i => ({
+                id: `mbx_${i.type}_${i.id}`,
+                type: i.type,
+                name: i.title,
+                poster: buildPoster(i.poster)
+            }))
 
-function parseId(id) {
-    const parts = id.split("_")
-    return {
-        type: parts[1],
-        subjectId: parts[2]
+        return { metas }
+
+    } catch (e) {
+
+        console.log("Catalog error:", e.message)
+
+        return { metas: [] }
     }
-}
 
-builder.defineCatalogHandler(async ({ type }) => {
-
-    const subjectType = type === "series" ? 2 : 1
-
-    const data = await apiGet("/subject/trending")
-
-    if (!data) return { metas: [] }
-
-    const metas = data.subjectList
-        .filter(i => i.subjectType === subjectType)
-        .slice(0, 50)
-        .map(i => ({
-            id: `mbx_${type}_${i.subjectId}`,
-            type,
-            name: i.title,
-            poster: poster(i.cover?.url)
-        }))
-
-    return { metas }
 })
 
 builder.defineMetaHandler(async ({ type, id }) => {
 
-    const p = parseId(id)
+    try {
 
-    const data = await apiGet("/subject/detail", {
-        subjectId: p.subjectId
-    })
+        const parts = id.split("_")
+        const mediaId = parts[2]
 
-    if (!data) return { meta: null }
+        const res = await axios.get(`${API}/info?id=${mediaId}`)
 
-    const meta = {
-        id,
-        type,
-        name: data.title,
-        poster: poster(data.cover?.url),
-        description: data.description
-    }
+        const data = res.data
 
-    if (type === "series") {
+        const meta = {
+            id,
+            type,
+            name: data.title,
+            poster: buildPoster(data.poster),
+            description: data.description
+        }
 
-        meta.videos = []
+        if (type === "series") {
 
-        data.seasonList?.forEach(season => {
+            meta.videos = []
 
-            season.episodeList?.forEach(ep => {
+            data.episodes.forEach(ep => {
 
                 meta.videos.push({
-                    id: `${id}:${season.se}:${ep.ep}`,
-                    season: season.se,
-                    episode: ep.ep,
+                    id: `${id}:${ep.season}:${ep.episode}`,
+                    season: ep.season,
+                    episode: ep.episode,
                     title: ep.title
                 })
 
             })
+        }
 
-        })
+        return { meta }
 
+    } catch (e) {
+
+        console.log("Meta error:", e.message)
+
+        return { meta: null }
     }
 
-    return { meta }
 })
 
 builder.defineStreamHandler(async ({ id }) => {
 
-    const parts = id.split(":")
+    try {
 
-    const base = parts[0]
+        const parts = id.split(":")
 
-    const season = parts[1] || 1
-    const episode = parts[2] || 1
+        const base = parts[0]
 
-    const p = parseId(base)
+        const season = parts[1]
+        const episode = parts[2]
 
-    const epData = await apiGet("/subject/episode", {
-        subjectId: p.subjectId,
-        se: season
-    })
+        const mediaId = base.split("_")[2]
 
-    if (!epData) return { streams: [] }
+        let url
 
-    const ep = epData.episodeList.find(e => e.ep == episode)
+        if (season && episode) {
+            url = `${API}/stream?id=${mediaId}&season=${season}&episode=${episode}`
+        } else {
+            url = `${API}/stream?id=${mediaId}`
+        }
 
-    if (!ep) return { streams: [] }
+        const res = await axios.get(url)
 
-    const play = await apiGet("/play", {
-        episodeId: ep.episodeId
-    })
+        const streams = (res.data.streams || []).map(s => ({
+            name: "MovieBox",
+            title: s.quality || "Stream",
+            url: s.url
+        }))
 
-    if (!play) return { streams: [] }
+        return { streams }
 
-    const streams = play.streamList.map(s => ({
-        name: "MovieBox",
-        title: s.resolution,
-        url: s.url
-    }))
+    } catch (e) {
 
-    return { streams }
+        console.log("Stream error:", e.message)
+
+        return { streams: [] }
+    }
+
 })
 
 serveHTTP(builder.getInterface(), { port: PORT })
 
-console.log("Addon running on " + PORT)
+console.log("Addon running at http://localhost:" + PORT)
