@@ -24,8 +24,6 @@ function cacheSet(key, data) { cache.set(key, { data, ts: Date.now() }); }
 
 // ── Cookies ────────────────────────────────────────────────
 async function getCookies() {
-  // Note: serverless functions are stateless, but module-level cache
-  // persists within the same warm instance (usually a few minutes)
   if (CONFIG._cookies !== null && CONFIG._cookies !== undefined &&
       (Date.now() - CONFIG._cookieFetchedAt < 25 * 60 * 1000))
     return CONFIG._cookies;
@@ -151,21 +149,26 @@ module.exports = async (req, res) => {
   const pathname = qIdx >= 0 ? url.slice(0, qIdx) : url;
   const qs = qIdx >= 0 ? new URLSearchParams(url.slice(qIdx + 1)) : new URLSearchParams();
 
-  // Get host for proxy URLs
   const host = `https://${req.headers.host}`;
 
   try {
     // Manifest
     if (pathname === "/manifest.json" || pathname === "/" || pathname === "") {
       jsonResp(res, {
-        id: "community.movieboxph", version: "9.0.0",
+        id: "community.movieboxph", version: "9.0.1",
         name: "MovieBox", description: "MovieBox — Movies & Series",
         logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
         catalogs: [
-          { type: "movie",  id: "mbx_movies", name: "MovieBox Movies",
-            extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
-          { type: "series", id: "mbx_series", name: "MovieBox Series",
-            extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+          {
+            type: "movie", id: "mbx_movies", name: "MovieBox Movies",
+            extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }],
+            behaviorHints: { configurable: false, defaultSortOrder: "asc" },
+          },
+          {
+            type: "series", id: "mbx_series", name: "MovieBox Series",
+            extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }],
+            behaviorHints: { configurable: false, defaultSortOrder: "asc" },
+          },
         ],
         resources: ["catalog", "meta", "stream"],
         types: ["movie", "series"],
@@ -227,7 +230,7 @@ module.exports = async (req, res) => {
       let items = [];
 
       if (extra.search) {
-        const data = await apiPost("/subject/search", { keyword: extra.search, page: String(page), perPage: CONFIG.PAGE_SIZE });
+        const data = await apiPost("/subject/search", { keyword: extra.search, page: String(page), perPage: String(CONFIG.PAGE_SIZE) });
         items = (data?.items || []).filter(i => i.subjectType === subjectType);
       } else if (type === "series") {
         const data = await apiGet("/subject/trending");
@@ -235,7 +238,7 @@ module.exports = async (req, res) => {
       } else {
         const keywords = ["the","a","man","love","war","night","dead","dark","last","world"];
         const keyword = keywords[(page - 1) % keywords.length];
-        const data = await apiPost("/subject/search", { keyword, page: "1", perPage: CONFIG.PAGE_SIZE });
+        const data = await apiPost("/subject/search", { keyword, page: "1", perPage: String(CONFIG.PAGE_SIZE) });
         items = (data?.items || []).filter(i => i.subjectType === 1);
       }
 
@@ -262,8 +265,6 @@ module.exports = async (req, res) => {
       meta.id = id;
 
       if (type === "series") {
-        const detailPath = detailPathCache.get(parsed.subjectId) || "";
-        // For serverless, use fixed episode list (can't do long discovery)
         meta.videos = [];
         for (let s = 1; s <= 5; s++) {
           for (let ep = 1; ep <= 30; ep++) {
@@ -287,7 +288,6 @@ module.exports = async (req, res) => {
       const parsed = parseId(baseId);
       if (!parsed) { jsonResp(res, { streams: [] }); return; }
 
-      // Serverless: no cache, use empty detailPath (works fine)
       const se = type === "movie" ? 0 : season;
       const ep = type === "movie" ? 0 : episode;
 
