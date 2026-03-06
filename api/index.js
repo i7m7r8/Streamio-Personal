@@ -206,8 +206,8 @@ module.exports = async (req, res) => {
       return;
     }
 
-    // Catalog
-    const catalogMatch = pathname.match(/^\/(movie|series)\/catalog\/[^/]+(?:\/([^/]+))?\.json$/);
+    // Catalog: /catalog/type/id or /catalog/type/id/extra
+    const catalogMatch = pathname.match(/^\/catalog\/(movie|series)\/[^/]+(?:\/([^/]+))?\.json$/);
     if (catalogMatch) {
       const type = catalogMatch[1];
       const extraStr = catalogMatch[2] || "";
@@ -244,8 +244,8 @@ module.exports = async (req, res) => {
       return;
     }
 
-    // Meta
-    const metaMatch = pathname.match(/^\/(movie|series)\/meta\/(.+)\.json$/);
+    // Meta: /meta/type/id
+    const metaMatch = pathname.match(/^\/meta\/(movie|series)\/(.+)\.json$/);
     if (metaMatch) {
       const type = metaMatch[1];
       const id = metaMatch[2];
@@ -275,8 +275,8 @@ module.exports = async (req, res) => {
       return;
     }
 
-    // Stream
-    const streamMatch = pathname.match(/^\/(movie|series)\/stream\/(.+)\.json$/);
+    // Stream: /stream/type/id
+    const streamMatch = pathname.match(/^\/stream\/(movie|series)\/(.+)\.json$/);
     if (streamMatch) {
       const type = streamMatch[1];
       const id = streamMatch[2];
