@@ -1,4 +1,4 @@
-const axios = require("axios");
+export const config = { runtime: "edge" };
 
 const CONFIG = {
   API_BASE:    "https://h5-api.aoneroom.com",
@@ -8,51 +8,8 @@ const CONFIG = {
   STREAM_BFF:  "/wefeed-h5-bff",
   PAGE_SIZE:   24,
   PH_IP:       "112.198.0.1",
-  _cookies:    null,
-  _cookieFetchedAt: 0,
 };
 
-// ── Cache ──────────────────────────────────────────────────
-const cache = new Map();
-function cacheGet(key) {
-  const e = cache.get(key);
-  if (!e) return null;
-  if (Date.now() - e.ts > 5 * 60 * 1000) { cache.delete(key); return null; }
-  return e.data;
-}
-function cacheSet(key, data) { cache.set(key, { data, ts: Date.now() }); }
-
-// ── Cookies ────────────────────────────────────────────────
-async function getCookies() {
-  if (CONFIG._cookies !== null && CONFIG._cookies !== undefined &&
-      (Date.now() - CONFIG._cookieFetchedAt < 25 * 60 * 1000))
-    return CONFIG._cookies;
-  try {
-    // Use a more reliable endpoint to get cookies
-    const res = await axios.get(
-      `${CONFIG.STREAM_HOST}/wefeed-h5-bff/app/get-latest-app-pkgs?app_name=moviebox`,
-      {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36",
-          "X-Forwarded-For": CONFIG.PH_IP,
-          "X-Real-IP": CONFIG.PH_IP,
-          "CF-IPCountry": "PH"
-        },
-        timeout: 10000
-      }
-    );
-    const setCookie = res.headers["set-cookie"] || [];
-    CONFIG._cookies = setCookie.length > 0 ? setCookie.map(c => c.split(";")[0]).join("; ") : "";
-    CONFIG._cookieFetchedAt = Date.now();
-  } catch (err) {
-    console.warn("Cookie fetch failed, continuing without cookies");
-    CONFIG._cookies = "";
-    CONFIG._cookieFetchedAt = Date.now(); // prevent immediate retry
-  }
-  return CONFIG._cookies;
-}
-
-// ── Catalog API ────────────────────────────────────────────
 const CATALOG_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36",
   "Accept": "application/json",
@@ -60,107 +17,85 @@ const CATALOG_HEADERS = {
   "Referer": "https://h5.aoneroom.com/",
 };
 
-async function apiGet(endpoint, params = {}) {
-  const url = CONFIG.API_BASE + CONFIG.BFF + endpoint;
-  const key = url + JSON.stringify(params);
-  const cached = cacheGet(key);
-  if (cached) return cached;
+let _cookies = null;
+let _cookieFetchedAt = 0;
+
+async function getCookies() {
+  if (_cookies !== null && (Date.now() - _cookieFetchedAt < 25 * 60 * 1000)) return _cookies;
   try {
-    const res = await axios.get(url, {
-      params: { host: CONFIG.PAGE_HOST, ...params },
-      headers: CATALOG_HEADERS,
-      timeout: 15000
+    const res = await fetch(`${CONFIG.STREAM_HOST}/wefeed-h5-bff/app/get-latest-app-pkgs?app_name=moviebox`, {
+      headers: { "User-Agent": "Mozilla/5.0", "X-Forwarded-For": CONFIG.PH_IP, "X-Real-IP": CONFIG.PH_IP, "CF-IPCountry": "PH" }
     });
-    if (res.data?.code !== 0) return null;
-    cacheSet(key, res.data.data);
-    return res.data.data;
-  } catch (err) {
-    console.error(`API GET ${endpoint} failed:`, err.message);
-    return null;
-  }
+    const setCookie = res.headers.get("set-cookie") || "";
+    _cookies = setCookie ? setCookie.split(";")[0] : "";
+    _cookieFetchedAt = Date.now();
+  } catch { _cookies = ""; }
+  return _cookies;
+}
+
+async function apiGet(endpoint, params = {}) {
+  const url = new URL(CONFIG.API_BASE + CONFIG.BFF + endpoint);
+  url.searchParams.set("host", CONFIG.PAGE_HOST);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  try {
+    const res = await fetch(url.toString(), { headers: CATALOG_HEADERS });
+    const d = await res.json();
+    if (d?.code !== 0) return null;
+    return d.data;
+  } catch { return null; }
 }
 
 async function apiPost(endpoint, body = {}) {
   const url = CONFIG.API_BASE + CONFIG.BFF + endpoint;
-  const key = url + JSON.stringify(body);
-  const cached = cacheGet(key);
-  if (cached) return cached;
   try {
-    const res = await axios.post(url,
-      { host: CONFIG.PAGE_HOST, ...body },
-      { headers: { ...CATALOG_HEADERS, "Content-Type": "application/json" }, timeout: 15000 }
-    );
-    if (res.data?.code !== 0) return null;
-    cacheSet(key, res.data.data);
-    return res.data.data;
-  } catch (err) {
-    console.error(`API POST ${endpoint} failed:`, err.message);
-    return null;
-  }
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { ...CATALOG_HEADERS, "Content-Type": "application/json" },
+      body: JSON.stringify({ host: CONFIG.PAGE_HOST, ...body })
+    });
+    const d = await res.json();
+    if (d?.code !== 0) return null;
+    return d.data;
+  } catch { return null; }
 }
 
-// ── Stream API ─────────────────────────────────────────────
 async function fetchStreams(subjectId, se, ep) {
-  const key = `stream_${subjectId}_${se}_${ep}`;
-  const cached = cacheGet(key);
-  if (cached) return cached;
-
   const cookies = await getCookies();
-  const referer = `https://h5.aoneroom.com/movies/${subjectId}`;
-
   try {
-    const res = await axios.get(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/play`, {
-      params: { subjectId, se, ep },
+    const url = new URL(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/play`);
+    url.searchParams.set("subjectId", subjectId);
+    url.searchParams.set("se", se);
+    url.searchParams.set("ep", ep);
+    const res = await fetch(url.toString(), {
       headers: {
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
-        "Origin": "https://h5.aoneroom.com",
         "Accept": "application/json",
-        "Referer": referer,
+        "Origin": "https://h5.aoneroom.com",
+        "Referer": `https://h5.aoneroom.com/movies/${subjectId}`,
         "Cookie": cookies,
         "X-Forwarded-For": CONFIG.PH_IP,
         "X-Real-IP": CONFIG.PH_IP,
         "CF-IPCountry": "PH",
-      },
-      timeout: 15000
+      }
     });
-
-    const d = res.data;
-    if (d?.code !== 0 || !d?.data?.streams?.length) return [];
-    const streams = d.data.streams;
-    cacheSet(key, streams);
-    return streams;
-  } catch (err) {
-    console.error(`fetchStreams error for ${subjectId} se=${se} ep=${ep}:`, err.message);
-    return [];
-  }
+    const d = await res.json();
+    if (d?.code !== 0 || !d?.data?.streams?.length) return { streams: [], hasResource: d?.data?.hasResource };
+    return { streams: d.data.streams, hasResource: true };
+  } catch (e) { return { streams: [], error: e.message }; }
 }
-
-// ── Fetch episodes for a series ────────────────────────────
-function fetchEpisodes() {
-  // Return placeholder — real episode discovery requires stream API (PH IP only)
-  const episodes = [];
-  for (let s = 1; s <= 6; s++)
-    for (let ep = 1; ep <= 30; ep++)
-      episodes.push({ season: s, episode: ep, name: `S${s}E${ep}`, releaseDate: new Date(0).toISOString() });
-  return episodes;
-}
-
-// ── Helpers ────────────────────────────────────────────────
-const detailPathCache = new Map();
-const itemCache = new Map();
 
 function normalizePoster(url) {
   if (!url) return null;
   return url.startsWith("http") ? url : `https://pbcdnw.aoneroom.com${url}`;
 }
 
+const itemCache = new Map();
+
 function toMeta(item, type) {
   const subjectId = String(item.subjectId || "");
-  if (item.detailPath) detailPathCache.set(subjectId, item.detailPath);
   itemCache.set(subjectId, item);
   return {
-    id: `mbx_${type}_${subjectId}`,
-    type,
+    id: `mbx_${type}_${subjectId}`, type,
     name: item.title || "Unknown",
     poster: normalizePoster(item.cover?.url),
     background: normalizePoster(item.stills?.url),
@@ -177,106 +112,86 @@ function parseId(id) {
   return m ? { type: m[1], subjectId: m[2] } : null;
 }
 
-function jsonResp(res, data) {
-  res.setHeader("Content-Type", "application/json");
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.end(JSON.stringify(data));
+function jsonResp(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+  });
 }
 
-// ── Serverless handler ─────────────────────────────────────
-module.exports = async (req, res) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "*");
+const MANIFEST = {
+  id: "community.movieboxph", version: "12.0.0",
+  name: "MovieBox", description: "MovieBox — Movies & Series",
+  logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
+  catalogs: [
+    { type: "movie",  id: "mbx_movies", name: "MovieBox Movies",
+      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+    { type: "series", id: "mbx_series", name: "MovieBox Series",
+      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+  ],
+  resources: ["catalog", "meta", "stream"],
+  types: ["movie", "series"],
+  idPrefixes: ["mbx_"],
+};
 
-  if (req.method === "OPTIONS") { res.status(204).end(); return; }
+export default async function handler(request) {
+  const url = new URL(request.url);
+  const pathname = url.pathname;
 
-  const url = req.url || "/";
-  const qIdx = url.indexOf("?");
-  const pathname = qIdx >= 0 ? url.slice(0, qIdx) : url;
-  const qs = qIdx >= 0 ? new URLSearchParams(url.slice(qIdx + 1)) : new URLSearchParams();
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*" } });
+  }
 
   try {
     // Manifest
-    if (pathname === "/manifest.json" || pathname === "/" || pathname === "") {
-      jsonResp(res, {
-        id: "community.movieboxph",
-        version: "9.0.4",
-        name: "MovieBox",
-        description: "MovieBox — Movies & Series (Improved)",
-        logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
-        catalogs: [
-          {
-            type: "movie", id: "mbx_movies", name: "MovieBox Movies",
-            extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }],
-          },
-          {
-            type: "series", id: "mbx_series", name: "MovieBox Series",
-            extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }],
-          },
-        ],
-        resources: ["catalog", "meta", "stream"],
-        types: ["movie", "series"],
-        idPrefixes: ["mbx_"],
-      });
-      return;
+    if (pathname === "/manifest.json" || pathname === "/") return jsonResp(MANIFEST);
+
+    // Debug
+    const debugMatch = pathname.match(/^\/debug\/([^/]+)\/([^/]+)\/([^/]+)$/);
+    if (debugMatch) {
+      const result = await fetchStreams(debugMatch[1], debugMatch[2], debugMatch[3]);
+      return jsonResp(result);
     }
 
-    // Catalog: /catalog/type/id or /catalog/type/id/extra
+    // Catalog
     const catalogMatch = pathname.match(/^\/catalog\/(movie|series)\/[^/]+(?:\/([^/]+))?\.json$/);
     if (catalogMatch) {
       const type = catalogMatch[1];
       const extraStr = catalogMatch[2] || "";
       const extra = {};
-      if (extraStr) {
-        extraStr.split("&").forEach(part => {
-          const eq = part.indexOf("=");
-          if (eq > 0) extra[decodeURIComponent(part.slice(0, eq))] = decodeURIComponent(part.slice(eq + 1));
-        });
-      }
-      if (qs.get("search")) extra.search = qs.get("search");
-      if (qs.get("skip")) extra.skip = qs.get("skip");
+      if (extraStr) extraStr.split("&").forEach(part => {
+        const eq = part.indexOf("=");
+        if (eq > 0) extra[decodeURIComponent(part.slice(0, eq))] = decodeURIComponent(part.slice(eq + 1));
+      });
+      if (url.searchParams.get("search")) extra.search = url.searchParams.get("search");
+      if (url.searchParams.get("skip")) extra.skip = url.searchParams.get("skip");
 
       const subjectType = type === "series" ? 2 : 1;
-      const skip = parseInt(extra.skip || 0);
-      const page = Math.floor(skip / CONFIG.PAGE_SIZE) + 1;
+      const page = Math.floor(parseInt(extra.skip || 0) / CONFIG.PAGE_SIZE) + 1;
       let items = [];
 
       if (extra.search) {
-        // Search
         const data = await apiPost("/subject/search", { keyword: extra.search, page: String(page), perPage: String(CONFIG.PAGE_SIZE) });
         items = (data?.items || []).filter(i => i.subjectType === subjectType);
+      } else if (type === "series") {
+        const data = await apiGet("/subject/trending");
+        items = (data?.subjectList || []).filter(i => i.subjectType === 2);
       } else {
-        // Use a dedicated listing endpoint if available; fallback to search with generic terms
-        // Try to get from trending or popular lists first
-        if (type === "series") {
-          const data = await apiGet("/subject/trending");
-          items = (data?.subjectList || []).filter(i => i.subjectType === 2);
-        } else {
-          // For movies, try multiple sources
-          const trending = await apiGet("/subject/trending");
-          items = (trending?.subjectList || []).filter(i => i.subjectType === 1);
-          if (items.length === 0) {
-            // Fallback to search with a popular keyword
-            const popularKeywords = ["2024", "action", "comedy", "drama", "thriller"];
-            const keyword = popularKeywords[(page - 1) % popularKeywords.length];
-            const data = await apiPost("/subject/search", { keyword, page: "1", perPage: String(CONFIG.PAGE_SIZE) });
-            items = (data?.items || []).filter(i => i.subjectType === 1);
-          }
-        }
+        const keywords = ["the","a","man","love","war","night","dead","dark","last","world"];
+        const data = await apiPost("/subject/search", { keyword: keywords[(page-1) % keywords.length], page: "1", perPage: String(CONFIG.PAGE_SIZE) });
+        items = (data?.items || []).filter(i => i.subjectType === 1);
       }
 
-      const metas = items.filter(i => i.subjectId).map(i => toMeta(i, type));
-      jsonResp(res, { metas });
-      return;
+      return jsonResp({ metas: items.filter(i => i.subjectId).map(i => toMeta(i, type)) });
     }
 
-    // Meta: /meta/type/id
+    // Meta
     const metaMatch = pathname.match(/^\/meta\/(movie|series)\/(.+)\.json$/);
     if (metaMatch) {
       const type = metaMatch[1];
       const id = metaMatch[2];
       const parsed = parseId(id);
-      if (!parsed) { jsonResp(res, { meta: null }); return; }
+      if (!parsed) return jsonResp({ meta: null });
 
       let item = itemCache.get(parsed.subjectId) || null;
       if (!item) {
@@ -288,53 +203,28 @@ module.exports = async (req, res) => {
       meta.id = id;
 
       if (type === "series") {
-        // Fetch real episodes
-        const episodes = fetchEpisodes();
-        if (episodes.length > 0) {
-          meta.videos = episodes.map(ep => ({
-            id: `${id}:${ep.season}:${ep.episode}`,
-            title: ep.name || `S${ep.season}E${ep.episode}`,
-            season: ep.season,
-            episode: ep.episode,
-            released: ep.releaseDate,
-            thumbnail: normalizePoster(ep.thumbnail?.url),
-          }));
-        } else {
-          // Fallback to placeholder (limited to 1 season, 10 episodes to avoid huge lists)
-          meta.videos = [];
-          for (let ep = 1; ep <= 10; ep++) {
-            meta.videos.push({
-              id: `${id}:1:${ep}`,
-              title: `S1E${ep}`,
-              season: 1,
-              episode: ep,
-              released: new Date(0).toISOString(),
-            });
-          }
-        }
+        meta.videos = [];
+        for (let s = 1; s <= 6; s++)
+          for (let ep = 1; ep <= 30; ep++)
+            meta.videos.push({ id: `${id}:${s}:${ep}`, title: `S${s}E${ep}`, season: s, episode: ep, released: new Date(0).toISOString() });
       }
-
-      jsonResp(res, { meta });
-      return;
+      return jsonResp({ meta });
     }
 
-    // Stream: /stream/type/id
+    // Stream
     const streamMatch = pathname.match(/^\/stream\/(movie|series)\/(.+)\.json$/);
     if (streamMatch) {
       const type = streamMatch[1];
       const id = decodeURIComponent(streamMatch[2]);
       const parts = id.split(":");
-      const baseId = parts[0];
-      const season = parts[1] !== undefined ? parseInt(parts[1]) : 0;
-      const episode = parts[2] !== undefined ? parseInt(parts[2]) : 0;
-      const parsed = parseId(baseId);
-      if (!parsed) { jsonResp(res, { streams: [] }); return; }
+      const parsed = parseId(parts[0]);
+      if (!parsed) return jsonResp({ streams: [] });
 
-      const se = type === "movie" ? 0 : season;
-      const ep = type === "movie" ? 0 : episode;
+      const se = type === "movie" ? 0 : parseInt(parts[1] || 0);
+      const ep = type === "movie" ? 0 : parseInt(parts[2] || 0);
 
-      const rawStreams = await fetchStreams(parsed.subjectId, se, ep);
-      if (!rawStreams.length) { jsonResp(res, { streams: [] }); return; }
+      const { streams: rawStreams } = await fetchStreams(parsed.subjectId, se, ep);
+      if (!rawStreams.length) return jsonResp({ streams: [] });
 
       const qualityOrder = { "1080": 0, "720": 1, "480": 2, "360": 3 };
       const streams = rawStreams
@@ -344,17 +234,15 @@ module.exports = async (req, res) => {
           url: s.url,
           name: "MovieBox",
           title: `${s.resolutions ? s.resolutions + "p" : "HD"}${s.size ? " · " + Math.round(parseInt(s.size)/1024/1024) + "MB" : ""}`,
-          behaviorHints: { notWebReady: false, bingeGroup: `mbx-${parsed.subjectId}` }
+          behaviorHints: { notWebReady: true, bingeGroup: `mbx-${parsed.subjectId}` }
         }));
 
-      jsonResp(res, { streams });
-      return;
+      return jsonResp({ streams });
     }
 
-    res.status(404).end("Not found");
+    return new Response("Not found", { status: 404 });
 
   } catch (err) {
-    console.error("Handler error:", err);
-    res.status(500).end("Server error");
+    return new Response("Error: " + err.message, { status: 500 });
   }
-};
+}
