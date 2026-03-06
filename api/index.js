@@ -90,13 +90,14 @@ async function fetchStreams(subjectId, detailPath, se, ep) {
     const res = await axios.get(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/play`, {
       params: { subjectId, se, ep },
       headers: {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
+        "User-Agent": "com.community.moviebox/50020075 (Android 10; Mobile)", "Origin": "https://h5.aoneroom.com",
         "Accept": "application/json", "Referer": referer, "Cookie": cookies,
         "X-Forwarded-For": CONFIG.PH_IP, "X-Real-IP": CONFIG.PH_IP, "CF-IPCountry": "PH",
       },
       timeout: 15000
     });
     const d = res.data;
+    console.log("FULL RESPONSE:", JSON.stringify(d));
     console.log("play API code:", d?.code, "message:", d?.message);
     console.log("streams count:", d?.data?.streams?.length ?? 0);
     if (d?.code !== 0) return [];
