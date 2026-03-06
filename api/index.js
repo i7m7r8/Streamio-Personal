@@ -210,7 +210,7 @@ function jsonResp(data, status = 200) {
 }
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "15.6.0",
+  id: "community.movieboxph", version: "15.7.0",
   name: "MovieBox", description: "MovieBox — Movies & Series with Dubbed & Subtitles",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
@@ -284,13 +284,24 @@ export default async function handler(request) {
         const imdbId = id;
         const subjectType = type === "series" ? 2 : 1;
         try {
-          // Get title from Cinemata (Stremio's meta provider)
-          const cinemata = await fetch(`https://v3-cinemeta.strem.io/meta/${type}/${imdbId}.json`)
+          // Try multiple sources to get title
+          let title = null;
+
+          // Source 1: IMDB suggestions API
+          const imdbRes = await fetch(`https://v2.sg.media-imdb.com/suggestion/t/${imdbId}.json`)
             .then(r => r.json()).catch(() => null);
-          const title = cinemata?.meta?.name;
+          title = imdbRes?.d?.[0]?.l;
+
+          // Source 2: OMDB
+          if (!title) {
+            const omdb = await fetch(`https://www.omdbapi.com/?i=${imdbId}&apikey=trilogy`)
+              .then(r => r.json()).catch(() => null);
+            title = omdb?.Title;
+          }
+
           if (!title) return jsonResp({ meta: null });
 
-          const searchData = await apiPost("/subject/search", { keyword: title, page: "1", perPage: "5" });
+          const searchData = await apiPost("/subject/search", { keyword: title, page: "1", perPage: "8" });
           const found = (searchData?.items || []).find(i => i.subjectType === subjectType);
           if (!found) return jsonResp({ meta: null });
 
