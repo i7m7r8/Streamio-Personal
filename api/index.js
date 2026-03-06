@@ -156,7 +156,7 @@ function jsonResp(data, status = 200) {
 }
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "14.1.0",
+  id: "community.movieboxph", version: "14.2.0",
   name: "MovieBox", description: "MovieBox — Movies & Series",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
@@ -279,17 +279,23 @@ export default async function handler(request) {
 
       const se = type === "movie" ? 0 : parseInt(parts[1] || 1);
       const ep = type === "movie" ? 0 : parseInt(parts[2] || 1);
-      const detailPath = detailPathCache.get(parsed.subjectId) || "";
 
-      // If detailPath not cached, fetch trending to populate cache
-      if (!detailPath) {
+      // Get detailPath — try cache, then detail API, then trending
+      let finalDetailPath = detailPathCache.get(parsed.subjectId) || "";
+      if (!finalDetailPath) {
+        const detail = await apiGet("/subject/detail", { subjectId: parsed.subjectId });
+        if (detail?.detailPath) {
+          finalDetailPath = detail.detailPath;
+          detailPathCache.set(parsed.subjectId, finalDetailPath);
+        }
+      }
+      if (!finalDetailPath) {
         const trendData = await apiGet("/subject/trending");
         (trendData?.subjectList || []).forEach(i => {
           if (i.detailPath) detailPathCache.set(String(i.subjectId), i.detailPath);
         });
+        finalDetailPath = detailPathCache.get(parsed.subjectId) || parsed.subjectId;
       }
-
-      const finalDetailPath = detailPathCache.get(parsed.subjectId) || parsed.subjectId;
       const rawStreams = await fetchStreams(parsed.subjectId, finalDetailPath, se, ep);
       if (!rawStreams.length) return jsonResp({ streams: [] });
 
