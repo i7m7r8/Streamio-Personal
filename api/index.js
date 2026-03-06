@@ -210,7 +210,7 @@ function jsonResp(data, status = 200) {
 }
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "15.9.0",
+  id: "community.movieboxph", version: "15.10.0",
   name: "MovieBox", description: "MovieBox — Movies & Series with Dubbed & Subtitles",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
@@ -416,7 +416,7 @@ export default async function handler(request) {
         name: "MovieBox 🎬",
         title: `${s.resolutions ? s.resolutions + "p" : "HD"}${s.size ? " · " + Math.round(parseInt(s.size)/1024/1024) + "MB" : ""} · ${label}`,
         subtitles,
-        behaviorHints: { notWebReady: true, bingeGroup: `mbx-${parsed.subjectId}` }
+        behaviorHints: { bingeGroup: `mbx-${parsed.subjectId}` }
       });
 
       const streams = rawStreams
