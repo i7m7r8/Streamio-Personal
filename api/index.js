@@ -5,11 +5,8 @@ const manifest = {
     version: "10.0.0",
     name: "MovieBox",
     description: "MovieBox — Movies & Series",
-    logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
-
     resources: ["catalog", "meta", "stream"],
     types: ["movie", "series"],
-
     idPrefixes: ["mbx_"],
 
     catalogs: [
@@ -18,21 +15,11 @@ const manifest = {
             id: "mbx_movies",
             name: "MovieBox Movies",
             extra: [{ name: "search", isRequired: false }]
-        },
-        {
-            type: "series",
-            id: "mbx_series",
-            name: "MovieBox Series",
-            extra: [{ name: "search", isRequired: false }]
         }
     ]
 };
 
 const builder = new addonBuilder(manifest);
-
-/* -------------------------
-   SAMPLE DATA (test data)
-------------------------- */
 
 const movies = [
     {
@@ -40,65 +27,39 @@ const movies = [
         type: "movie",
         name: "Batman Begins",
         poster: "https://image.tmdb.org/t/p/w500/1P3ZyEq02wcTMd3iE4ebtLvncvH.jpg"
-    },
-    {
-        id: "mbx_movie_interstellar",
-        type: "movie",
-        name: "Interstellar",
-        poster: "https://image.tmdb.org/t/p/w500/rAiYTfKGqDCRIIqo664sY9XZIvQ.jpg"
     }
 ];
 
-/* -------------------------
-   CATALOG
-------------------------- */
-
-builder.defineCatalogHandler(async ({ type, id, extra }) => {
+builder.defineCatalogHandler(({ extra }) => {
 
     let metas = movies;
 
     if (extra?.search) {
-        const q = extra.search.toLowerCase();
-
         metas = movies.filter(m =>
-            m.name.toLowerCase().includes(q)
+            m.name.toLowerCase().includes(extra.search.toLowerCase())
         );
     }
 
-    return { metas };
+    return Promise.resolve({ metas });
 });
 
-/* -------------------------
-   META
-------------------------- */
-
-builder.defineMetaHandler(async ({ id }) => {
+builder.defineMetaHandler(({ id }) => {
 
     const meta = movies.find(m => m.id === id);
 
-    if (!meta) return { meta: null };
-
-    return { meta };
+    return Promise.resolve({ meta });
 });
 
-/* -------------------------
-   STREAM
-------------------------- */
+builder.defineStreamHandler(() => {
 
-builder.defineStreamHandler(async ({ id }) => {
-
-    return {
+    return Promise.resolve({
         streams: [
             {
                 title: "Example Stream",
                 url: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
             }
         ]
-    };
+    });
 });
-
-/* -------------------------
-   EXPORT FOR VERCEL
-------------------------- */
 
 module.exports = serveHTTP(builder.getInterface());
