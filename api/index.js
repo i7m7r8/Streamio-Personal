@@ -112,17 +112,17 @@ async function fetchStreams(subjectId, detailPath, se, ep) {
       }
       res = await axios.get(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/play`, axiosConfig);
       const d = res.data;
-      if (d?.code === 0 && (d?.data?.streams?.length > 0 || d?.data?.hasResource === true)) break;
+      console.log(`Attempt ${attempt} response: hasResource=${d?.data?.hasResource} streams=${d?.data?.streams?.length}`);
+      if (d?.code === 0 && d?.data?.streams?.length > 0) break;
       if (attempt === proxies.length) break;
-      console.log(`Attempt ${attempt} failed (hasResource:false), trying proxy ${attempt}...`);
     } catch(e) {
       console.log(`Attempt ${attempt} error: ${e.message}`);
-      if (attempt === proxies.length) throw e;
+      if (attempt === proxies.length) break;
     }
   }
   try {
+    if (!res) return [];
     const d = res.data;
-    console.log("FULL RESPONSE:", JSON.stringify(d).slice(0,200));
     if (d?.code !== 0) return [];
     const streams = d?.data?.streams || [];
     cacheSet(key, streams);
