@@ -35,14 +35,11 @@ async function ensureCookies() {
     const res = await fetch(`${CONFIG.STREAM_HOST}/wefeed-h5-bff/app/get-latest-app-pkgs?app_name=moviebox`, {
       headers: {
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
-        "X-Forwarded-For": CONFIG.PH_IP,
-        "X-Real-IP": CONFIG.PH_IP,
-        "CF-IPCountry": "PH",
-        "CF-Connecting-IP": CONFIG.PH_IP,
+        "X-Forwarded-For": CONFIG.PH_IP, "X-Real-IP": CONFIG.PH_IP,
+        "CF-IPCountry": "PH", "CF-Connecting-IP": CONFIG.PH_IP,
       }
     });
-    const setCookie = res.headers.get("set-cookie") || "";
-    _cookies = parseCookies(setCookie);
+    _cookies = parseCookies(res.headers.get("set-cookie") || "");
     _cookieFetchedAt = Date.now();
   } catch (e) { console.error("Cookie fetch failed:", e.message); }
 }
@@ -50,10 +47,8 @@ async function ensureCookies() {
 const BASE_HEADERS = {
   "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
   "Accept": "application/json",
-  "X-Forwarded-For": CONFIG.PH_IP,
-  "X-Real-IP": CONFIG.PH_IP,
-  "CF-IPCountry": "PH",
-  "CF-Connecting-IP": CONFIG.PH_IP,
+  "X-Forwarded-For": CONFIG.PH_IP, "X-Real-IP": CONFIG.PH_IP,
+  "CF-IPCountry": "PH", "CF-Connecting-IP": CONFIG.PH_IP,
 };
 
 const CATALOG_HEADERS = {
@@ -62,18 +57,6 @@ const CATALOG_HEADERS = {
   "Origin": "https://h5.aoneroom.com",
   "Referer": "https://h5.aoneroom.com/",
 };
-
-async function apiGet(endpoint, params = {}) {
-  const url = new URL(CONFIG.API_BASE + CONFIG.BFF + endpoint);
-  url.searchParams.set("host", CONFIG.PAGE_HOST);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  try {
-    const res = await fetch(url.toString(), { headers: CATALOG_HEADERS });
-    const d = await res.json();
-    if (d?.code !== 0) return null;
-    return d.data;
-  } catch { return null; }
-}
 
 async function apiPost(endpoint, body = {}) {
   try {
@@ -88,21 +71,20 @@ async function apiPost(endpoint, body = {}) {
   } catch { return null; }
 }
 
+async function apiGet(endpoint, params = {}) {
+  const url = new URL(CONFIG.API_BASE + CONFIG.BFF + endpoint);
+  url.searchParams.set("host", CONFIG.PAGE_HOST);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  try {
+    const res = await fetch(url.toString(), { headers: CATALOG_HEADERS });
+    const d = await res.json();
+    if (d?.code !== 0) return null;
+    return d.data;
+  } catch { return null; }
+}
+
 const detailPathCache = new Map();
 const itemCache = new Map();
-
-async function fetchDetail(subjectId) {
-  await ensureCookies();
-  const res = await fetch(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/detail?subjectId=${subjectId}`, {
-    headers: { ...BASE_HEADERS, "Cookie": buildCookieHeader(_cookies) }
-  }).then(r => r.json()).catch(() => null);
-  if (res?.data?.subject) {
-    const s = res.data.subject;
-    itemCache.set(subjectId, s);
-    if (s.detailPath) detailPathCache.set(subjectId, s.detailPath);
-  }
-  return res?.data || null;
-}
 
 async function fetchStreams(subjectId, detailPath, se, ep) {
   await ensureCookies();
@@ -209,14 +191,15 @@ function jsonResp(data, status = 200) {
   });
 }
 
+// ---- Exactly v14 manifest ----
 const MANIFEST = {
-  id: "community.movieboxph", version: "15.10.0",
+  id: "community.movieboxph", version: "16.0.0",
   name: "MovieBox", description: "MovieBox — Movies & Series with Dubbed & Subtitles",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
-    { type: "movie",  id: "mbx_movies",  name: "MovieBox Movies",
+    { type: "movie",  id: "mbx_top_movie",  name: "MovieBox Movies",
       extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
-    { type: "series", id: "mbx_series",  name: "MovieBox Series",
+    { type: "series", id: "mbx_top_series", name: "MovieBox Series",
       extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
   ],
   resources: ["catalog", "meta", "stream"],
@@ -237,10 +220,10 @@ export default async function handler(request) {
 
     if (pathname === "/debug") {
       await ensureCookies();
-      return jsonResp({ version: "15.0.0", cookies: Object.keys(_cookies) });
+      return jsonResp({ version: "16.0.0", cookies: Object.keys(_cookies) });
     }
 
-    // Catalog
+    // Catalog — same as v14
     const catalogMatch = pathname.match(/^\/catalog\/(movie|series)\/[^/]+(?:\/([^/]+))?\.json$/);
     if (catalogMatch) {
       const type = catalogMatch[1];
@@ -276,69 +259,35 @@ export default async function handler(request) {
     const metaMatch = pathname.match(/^\/meta\/(movie|series)\/(.+)\.json$/);
     if (metaMatch) {
       const type = metaMatch[1];
-      let id = metaMatch[2];
-      let parsed = parseId(id);
-
-      // If IMDB ID (tt...), resolve title via IMDB then search MovieBox
-      if (!parsed && id.startsWith("tt")) {
-        const imdbId = id;
-        const subjectType = type === "series" ? 2 : 1;
-        try {
-          // Get title from Cinemeta — try both types
-          let title = null;
-          let resolvedType = type;
-          for (const t of [type, type === "series" ? "movie" : "series"]) {
-            const cinemeta = await fetch(`https://cinemeta-live.strem.io/meta/${t}/${imdbId}.json`)
-              .then(r => r.json()).catch(() => null);
-            if (cinemeta?.meta?.name) {
-              title = cinemeta.meta.name;
-              resolvedType = t;
-              break;
-            }
-          }
-
-          if (!title) return jsonResp({ meta: null });
-
-          const resolvedSubjectType = resolvedType === "series" ? 2 : 1;
-          const searchData = await apiPost("/subject/search", { keyword: title, page: "1", perPage: "8" });
-          const found = (searchData?.items || []).find(i => i.subjectType === resolvedSubjectType)
-                     || (searchData?.items || [])[0];
-          if (!found) return jsonResp({ meta: null });
-          
-          // Update type to match resolved
-          const foundType = found.subjectType === 2 ? "series" : "movie";
-
-          id = `mbx_${foundType}_${found.subjectId}`;
-          parsed = parseId(id);
-          if (found.detailPath) detailPathCache.set(String(found.subjectId), found.detailPath);
-          itemCache.set(String(found.subjectId), found);
-        } catch { return jsonResp({ meta: null }); }
-      }
-
+      const id = metaMatch[2];
+      const parsed = parseId(id);
       if (!parsed) return jsonResp({ meta: null });
 
-      const detail = await fetchDetail(parsed.subjectId);
-      const subjectData = detail?.subject || null;
+      await ensureCookies();
+      const detail = await fetch(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/detail?subjectId=${parsed.subjectId}`, {
+        headers: { ...BASE_HEADERS, "Cookie": buildCookieHeader(_cookies) }
+      }).then(r => r.json()).catch(() => null);
+
+      const subjectData = detail?.data?.subject || null;
       const item = itemCache.get(parsed.subjectId) || subjectData || null;
+      if (subjectData) {
+        if (subjectData.detailPath) detailPathCache.set(parsed.subjectId, subjectData.detailPath);
+        itemCache.set(parsed.subjectId, subjectData);
+      }
 
       const meta = item ? toMeta(item, type) : { id, type, name: id };
       meta.id = id;
 
-      // Real release date from subject
-      if (subjectData?.releaseDate) meta.released = subjectData.releaseDate;
-
       if (type === "series") {
         meta.videos = [];
-        const seasons = detail?.resource?.seasons || [];
+        const seasons = detail?.data?.resource?.seasons || [];
         if (seasons.length > 0) {
           for (const season of seasons) {
-            const maxEp = season.maxEp || 1;
-            for (let ep = 1; ep <= maxEp; ep++) {
+            for (let ep = 1; ep <= (season.maxEp || 1); ep++) {
               meta.videos.push({
                 id: `${id}:${season.se}:${ep}`,
                 title: `S${season.se}E${ep}`,
-                season: season.se,
-                episode: ep,
+                season: season.se, episode: ep,
                 released: new Date(0).toISOString()
               });
             }
@@ -386,12 +335,20 @@ export default async function handler(request) {
       const se = type === "movie" ? 0 : parseInt(parts[1] || 1);
       const ep = type === "movie" ? 0 : parseInt(parts[2] || 1);
 
-      // Fetch detail for detailPath + title
-      const detail = await fetchDetail(parsed.subjectId);
-      const finalDetailPath = detailPathCache.get(parsed.subjectId) || parsed.subjectId;
-      const itemTitle = detail?.subject?.title || itemCache.get(parsed.subjectId)?.title || "";
+      await ensureCookies();
+      const detailRes = await fetch(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/detail?subjectId=${parsed.subjectId}`, {
+        headers: { ...BASE_HEADERS, "Cookie": buildCookieHeader(_cookies) }
+      }).then(r => r.json()).catch(() => null);
 
-      // Fetch original streams + dubbed subjects in parallel
+      const subjectDetail = detailRes?.data?.subject || null;
+      if (subjectDetail) {
+        itemCache.set(parsed.subjectId, subjectDetail);
+        if (subjectDetail.detailPath) detailPathCache.set(parsed.subjectId, subjectDetail.detailPath);
+      }
+
+      const finalDetailPath = detailPathCache.get(parsed.subjectId) || parsed.subjectId;
+      const itemTitle = subjectDetail?.title || itemCache.get(parsed.subjectId)?.title || "";
+
       const [rawStreams, dubbedSubjects] = await Promise.all([
         fetchStreams(parsed.subjectId, finalDetailPath, se, ep),
         itemTitle ? findDubbedSubjects(itemTitle, type) : Promise.resolve([])
@@ -399,7 +356,6 @@ export default async function handler(request) {
 
       if (!rawStreams.length) return jsonResp({ streams: [] });
 
-      // Fetch captions + dubbed streams in parallel
       const [captions, ...dubbedStreamArrays] = await Promise.all([
         fetchCaptions(rawStreams[0].id, parsed.subjectId),
         ...dubbedSubjects.map(dub => fetchStreams(dub.subjectId, dub.detailPath, se, ep))
@@ -413,10 +369,10 @@ export default async function handler(request) {
 
       const buildEntry = (s, label) => ({
         url: `https://${host}/proxy?url=${encodeURIComponent(s.url)}`,
-        name: "MovieBox 🎬",
+        name: "MovieBox",
         title: `${s.resolutions ? s.resolutions + "p" : "HD"}${s.size ? " · " + Math.round(parseInt(s.size)/1024/1024) + "MB" : ""} · ${label}`,
         subtitles,
-        behaviorHints: { bingeGroup: `mbx-${parsed.subjectId}` }
+        behaviorHints: { notWebReady: true, bingeGroup: `mbx-${parsed.subjectId}` }
       });
 
       const streams = rawStreams
