@@ -206,7 +206,7 @@ function jsonResp(data, status = 200) {
 }
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "14.6.0",
+  id: "community.movieboxph", version: "14.7.0",
   name: "MovieBox", description: "MovieBox — Movies & Series",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
@@ -353,51 +353,37 @@ export default async function handler(request) {
       const se = type === "movie" ? 0 : parseInt(parts[1] || 1);
       const ep = type === "movie" ? 0 : parseInt(parts[2] || 1);
 
-      // Get detailPath — try cache, then detail API, then trending
-      let finalDetailPath = detailPathCache.get(parsed.subjectId) || "";
-      if (!finalDetailPath) {
-        const detail = await apiGet("/subject/detail", { subjectId: parsed.subjectId });
-        if (detail?.detailPath) {
-          finalDetailPath = detail.detailPath;
-          detailPathCache.set(parsed.subjectId, finalDetailPath);
-        }
+      // Fetch detail once — gets detailPath, title, and item info
+      await ensureCookies();
+      const detailRes = await fetch(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/detail?subjectId=${parsed.subjectId}`, {
+        headers: { ...BASE_HEADERS, "Cookie": buildCookieHeader(_cookies) }
+      }).then(r => r.json()).catch(() => null);
+
+      const subjectDetail = detailRes?.data?.subject || null;
+      if (subjectDetail) {
+        itemCache.set(parsed.subjectId, subjectDetail);
+        if (subjectDetail.detailPath) detailPathCache.set(parsed.subjectId, subjectDetail.detailPath);
       }
-      if (!finalDetailPath) {
-        const trendData = await apiGet("/subject/trending");
-        (trendData?.subjectList || []).forEach(i => {
-          if (i.detailPath) detailPathCache.set(String(i.subjectId), i.detailPath);
-        });
-        finalDetailPath = detailPathCache.get(parsed.subjectId) || parsed.subjectId;
-      }
-      const rawStreams = await fetchStreams(parsed.subjectId, finalDetailPath, se, ep);
+
+      const finalDetailPath = detailPathCache.get(parsed.subjectId) || parsed.subjectId;
+      const itemTitle = subjectDetail?.title || itemCache.get(parsed.subjectId)?.title || "";
+
+      // Fetch original streams + dubbed versions in parallel
+      const [rawStreams, dubbedSubjects] = await Promise.all([
+        fetchStreams(parsed.subjectId, finalDetailPath, se, ep),
+        itemTitle ? findDubbedSubjects(itemTitle, type) : Promise.resolve([])
+      ]);
+
       if (!rawStreams.length) return jsonResp({ streams: [] });
 
-      // Fetch subtitles from first stream
-      const captions = await fetchCaptions(rawStreams[0].id, parsed.subjectId);
+      // Fetch subtitles + dubbed streams in parallel
+      const [captions, ...dubbedStreamArrays] = await Promise.all([
+        fetchCaptions(rawStreams[0].id, parsed.subjectId),
+        ...dubbedSubjects.map(dub => fetchStreams(dub.subjectId, dub.detailPath, se, ep))
+      ]);
+
       const subtitles = captions.map(c => ({ id: c.id, url: c.url, lang: c.lan, label: c.lanName }));
-
-      // Get item title — fetch detail if not cached
-      let cachedItem = itemCache.get(parsed.subjectId);
-      if (!cachedItem) {
-        const det = await fetch(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/detail?subjectId=${parsed.subjectId}`, {
-          headers: { ...BASE_HEADERS, "Cookie": buildCookieHeader(_cookies) }
-        }).then(r => r.json()).catch(() => null);
-        if (det?.data?.subject) {
-          cachedItem = det.data.subject;
-          itemCache.set(parsed.subjectId, cachedItem);
-          if (cachedItem.detailPath) detailPathCache.set(parsed.subjectId, cachedItem.detailPath);
-        }
-      }
-      const itemTitle = cachedItem?.title || "";
-
-      // Find dubbed versions in parallel
-      const dubbedSubjects = itemTitle ? await findDubbedSubjects(itemTitle, type) : [];
-      const dubbedResults = await Promise.all(
-        dubbedSubjects.map(async (dub) => ({
-          label: dub.label,
-          streams: await fetchStreams(dub.subjectId, dub.detailPath, se, ep)
-        }))
-      );
+      const dubbedResults = dubbedSubjects.map((dub, i) => ({ label: dub.label, streams: dubbedStreamArrays[i] || [] }));
 
       const qualityOrder = { "1080": 0, "720": 1, "480": 2, "360": 3 };
       const host = request.headers.get("host");
