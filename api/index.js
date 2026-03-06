@@ -188,7 +188,7 @@ module.exports = async (req, res) => {
     // Manifest
     if (pathname === "/manifest.json" || pathname === "/" || pathname === "") {
       jsonResp(res, {
-        id: "community.movieboxph", version: "9.0.1",
+        id: "community.movieboxph", version: "9.0.3",
         name: "MovieBox", description: "MovieBox — Movies & Series",
         logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
         catalogs: [
