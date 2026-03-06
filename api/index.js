@@ -81,6 +81,10 @@ async function fetchStreams(subjectId, detailPath, se, ep) {
   const cached = cacheGet(key);
   if (cached) return cached;
   const cookies = await getCookies();
+
+  console.log("fetchStreams called:", { subjectId, se, ep });
+  console.log("cookies:", cookies ? "got cookies" : "NO COOKIES");
+
   const referer = `https://h5.aoneroom.com/movies/${detailPath || subjectId}`;
   try {
     const res = await axios.get(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/play`, {
@@ -93,11 +97,16 @@ async function fetchStreams(subjectId, detailPath, se, ep) {
       timeout: 15000
     });
     const d = res.data;
+    console.log("play API code:", d?.code, "message:", d?.message);
+    console.log("streams count:", d?.data?.streams?.length ?? 0);
     if (d?.code !== 0) return [];
     const streams = d?.data?.streams || [];
     cacheSet(key, streams);
     return streams;
-  } catch (err) { return []; }
+  } catch (err) {
+    console.error("fetchStreams error:", err.message);
+    return [];
+  }
 }
 
 // ── Helpers ────────────────────────────────────────────────
