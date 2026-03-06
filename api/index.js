@@ -86,20 +86,43 @@ async function fetchStreams(subjectId, detailPath, se, ep) {
   console.log("cookies:", cookies ? "got cookies" : "NO COOKIES");
 
   const referer = `https://h5.aoneroom.com/movies/${detailPath || subjectId}`;
+  // List of free PH proxies to try
+  const proxies = [
+    { host: "103.152.112.162", port: 80 },
+    { host: "103.105.49.20", port: 8080 },
+    { host: "112.198.232.110", port: 8082 },
+  ];
+  
+  let res = null;
+  // First try without proxy (in case server is in PH region)
+  for (let attempt = 0; attempt <= proxies.length; attempt++) {
+    try {
+      const axiosConfig = {
+        params: { subjectId, se, ep },
+        headers: {
+          "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
+          "Origin": "https://h5.aoneroom.com",
+          "Accept": "application/json", "Referer": referer, "Cookie": cookies,
+          "X-Forwarded-For": CONFIG.PH_IP, "X-Real-IP": CONFIG.PH_IP, "CF-IPCountry": "PH",
+        },
+        timeout: 10000
+      };
+      if (attempt > 0) {
+        axiosConfig.proxy = { host: proxies[attempt-1].host, port: proxies[attempt-1].port, protocol: "http" };
+      }
+      res = await axios.get(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/play`, axiosConfig);
+      const d = res.data;
+      if (d?.code === 0 && (d?.data?.streams?.length > 0 || d?.data?.hasResource === true)) break;
+      if (attempt === proxies.length) break;
+      console.log(`Attempt ${attempt} failed (hasResource:false), trying proxy ${attempt}...`);
+    } catch(e) {
+      console.log(`Attempt ${attempt} error: ${e.message}`);
+      if (attempt === proxies.length) throw e;
+    }
+  }
   try {
-    const res = await axios.get(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/play`, {
-      params: { subjectId, se, ep },
-      headers: {
-        "User-Agent": "com.community.moviebox/50020075 (Android 10; Mobile)", "Origin": "https://h5.aoneroom.com",
-        "Accept": "application/json", "Referer": referer, "Cookie": cookies,
-        "X-Forwarded-For": CONFIG.PH_IP, "X-Real-IP": CONFIG.PH_IP, "CF-IPCountry": "PH",
-      },
-      timeout: 15000
-    });
     const d = res.data;
-    console.log("FULL RESPONSE:", JSON.stringify(d));
-    console.log("play API code:", d?.code, "message:", d?.message);
-    console.log("streams count:", d?.data?.streams?.length ?? 0);
+    console.log("FULL RESPONSE:", JSON.stringify(d).slice(0,200));
     if (d?.code !== 0) return [];
     const streams = d?.data?.streams || [];
     cacheSet(key, streams);
