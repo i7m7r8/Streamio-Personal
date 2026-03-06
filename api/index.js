@@ -1,188 +1,314 @@
-export const config = { runtime: "edge" };
+const { addonBuilder, serveHTTP } = require("stremio-addon-sdk")
+const axios = require("axios")
+const http = require("http")
+const https = require("https")
+
+const PORT = process.env.PORT || 7000
 
 const CONFIG = {
-  API_BASE:   "https://h5-api.aoneroom.com",
-  BFF:        "/wefeed-h5api-bff",
-  PAGE_HOST:  "h5.aoneroom.com",
-  PAGE_SIZE:  24,
-};
-
-const CATALOG_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36",
-  "Accept": "application/json",
-  "Origin": "https://h5.aoneroom.com",
-  "Referer": "https://h5.aoneroom.com/",
-};
-
-async function apiGet(endpoint, params = {}) {
-  const url = new URL(CONFIG.API_BASE + CONFIG.BFF + endpoint);
-  url.searchParams.set("host", CONFIG.PAGE_HOST);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  try {
-    const res = await fetch(url.toString(), { headers: CATALOG_HEADERS });
-    const d = await res.json();
-    if (d?.code !== 0) return null;
-    return d.data;
-  } catch { return null; }
+  API_BASE: "https://h5-api.aoneroom.com",
+  BFF: "/wefeed-h5api-bff",
+  STREAM_HOST: "https://h5.aoneroom.com",
+  STREAM_BFF: "/wefeed-h5-bff",
+  PAGE_HOST: "h5.aoneroom.com",
+  PH_IP: "112.198.0.1",
+  PAGE_SIZE: 24,
+  cookies: null,
+  cookieTime: 0
 }
 
-async function apiPost(endpoint, body = {}) {
-  try {
-    const res = await fetch(CONFIG.API_BASE + CONFIG.BFF + endpoint, {
-      method: "POST",
-      headers: { ...CATALOG_HEADERS, "Content-Type": "application/json" },
-      body: JSON.stringify({ host: CONFIG.PAGE_HOST, ...body })
-    });
-    const d = await res.json();
-    if (d?.code !== 0) return null;
-    return d.data;
-  } catch { return null; }
+const cache = new Map()
+
+function cacheGet(k){
+  const v = cache.get(k)
+  if(!v) return null
+  if(Date.now() - v.t > 300000){
+    cache.delete(k)
+    return null
+  }
+  return v.d
 }
 
-function normalizePoster(url) {
-  if (!url) return null;
-  return url.startsWith("http") ? url : `https://pbcdnw.aoneroom.com${url}`;
+function cacheSet(k,d){
+  cache.set(k,{d,t:Date.now()})
 }
 
-const itemCache = new Map();
+async function getCookies(){
 
-function toMeta(item, type) {
-  const subjectId = String(item.subjectId || "");
-  itemCache.set(subjectId, item);
+  if(CONFIG.cookies && Date.now()-CONFIG.cookieTime < 1800000)
+    return CONFIG.cookies
+
+  try{
+
+    const r = await axios.get(
+      `${CONFIG.STREAM_HOST}/wefeed-h5-bff/app/get-latest-app-pkgs?app_name=moviebox`,
+      {
+        headers:{
+          "User-Agent":"Mozilla/5.0",
+          "X-Forwarded-For":CONFIG.PH_IP,
+          "X-Real-IP":CONFIG.PH_IP,
+          "CF-IPCountry":"PH"
+        }
+      }
+    )
+
+    const sc = r.headers["set-cookie"] || []
+
+    CONFIG.cookies = sc.map(c=>c.split(";")[0]).join("; ")
+    CONFIG.cookieTime = Date.now()
+
+  }catch(e){
+    CONFIG.cookies = ""
+  }
+
+  return CONFIG.cookies
+}
+
+const HEADERS = {
+  "User-Agent":"Mozilla/5.0",
+  "Accept":"application/json",
+  "Origin":"https://h5.aoneroom.com",
+  "Referer":"https://h5.aoneroom.com/"
+}
+
+async function apiGet(endpoint,params={}){
+
+  const url = CONFIG.API_BASE + CONFIG.BFF + endpoint
+
+  const key = url + JSON.stringify(params)
+
+  const c = cacheGet(key)
+
+  if(c) return c
+
+  try{
+
+    const r = await axios.get(url,{
+      params:{host:CONFIG.PAGE_HOST,...params},
+      headers:HEADERS
+    })
+
+    if(r.data?.code !== 0) return null
+
+    cacheSet(key,r.data.data)
+
+    return r.data.data
+
+  }catch{
+    return null
+  }
+}
+
+async function apiPost(endpoint,body={}){
+
+  const url = CONFIG.API_BASE + CONFIG.BFF + endpoint
+
+  const key = url + JSON.stringify(body)
+
+  const c = cacheGet(key)
+
+  if(c) return c
+
+  try{
+
+    const r = await axios.post(
+      url,
+      {host:CONFIG.PAGE_HOST,...body},
+      {headers:{...HEADERS,"Content-Type":"application/json"}}
+    )
+
+    if(r.data?.code !== 0) return null
+
+    cacheSet(key,r.data.data)
+
+    return r.data.data
+
+  }catch{
+    return null
+  }
+}
+
+async function resolveStream(url){
+
+  try{
+
+    const r = await axios.get(url,{
+      headers:{
+        "Referer":"https://fmoviesunblocked.net/",
+        "User-Agent":"Mozilla/5.0"
+      },
+      maxRedirects:5,
+      timeout:15000
+    })
+
+    if(r.request?.res?.responseUrl)
+      return r.request.res.responseUrl
+
+    return url
+
+  }catch{
+    return url
+  }
+}
+
+async function fetchStreams(subjectId,se,ep){
+
+  const cookies = await getCookies()
+
+  try{
+
+    const r = await axios.get(
+      `${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/play`,
+      {
+        params:{subjectId,se,ep},
+        headers:{
+          "User-Agent":"Mozilla/5.0",
+          "Referer":`https://h5.aoneroom.com/movies/${subjectId}`,
+          "Cookie":cookies,
+          "X-Forwarded-For":CONFIG.PH_IP,
+          "X-Real-IP":CONFIG.PH_IP,
+          "CF-IPCountry":"PH"
+        }
+      }
+    )
+
+    if(r.data?.code !== 0) return []
+
+    const streams = r.data?.data?.streams || []
+
+    const out = []
+
+    for(const s of streams){
+
+      if(!s.url) continue
+
+      const finalUrl = await resolveStream(s.url)
+
+      out.push({
+        url:finalUrl,
+        res:s.resolutions || "HD",
+        size:s.size || ""
+      })
+    }
+
+    return out
+
+  }catch(e){
+
+    console.log("stream fetch error",e.message)
+
+    return []
+  }
+}
+
+function normalizePoster(url){
+
+  if(!url) return null
+
+  if(url.startsWith("http")) return url
+
+  return `https://pbcdnw.aoneroom.com${url}`
+}
+
+function parseId(id){
+
+  const m = id.match(/^mbx_(movie|series)_(.+)$/)
+
+  if(!m) return null
+
+  return {type:m[1],subjectId:m[2]}
+}
+
+const manifest = {
+  id:"community.moviebox",
+  version:"10.0.0",
+  name:"MovieBox",
+  description:"MovieBox Movies & Series",
+  logo:"https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
+  resources:["catalog","meta","stream"],
+  types:["movie","series"],
+  idPrefixes:["mbx_"],
+  catalogs:[
+    {type:"movie",id:"mbx_movies",name:"MovieBox Movies"},
+    {type:"series",id:"mbx_series",name:"MovieBox Series"}
+  ]
+}
+
+const builder = new addonBuilder(manifest)
+
+builder.defineCatalogHandler(async ({type})=>{
+
+  const subjectType = type === "series" ? 2 : 1
+
+  const data = await apiGet("/subject/trending")
+
+  const items = (data?.subjectList || [])
+  .filter(i=>i.subjectType === subjectType)
+
+  const metas = items.map(i=>({
+
+    id:`mbx_${type}_${i.subjectId}`,
+    type,
+    name:i.title,
+    poster:normalizePoster(i.cover?.url),
+    description:i.description || ""
+
+  }))
+
+  return {metas}
+})
+
+builder.defineMetaHandler(async ({type,id})=>{
+
+  const p = parseId(id)
+
+  if(!p) return {meta:null}
+
+  const data = await apiGet("/subject/trending")
+
+  const item = (data?.subjectList || [])
+  .find(i => String(i.subjectId) === p.subjectId)
+
+  if(!item) return {meta:null}
+
   return {
-    id: `mbx_${type}_${subjectId}`, type,
-    name: item.title || "Unknown",
-    poster: normalizePoster(item.cover?.url),
-    background: normalizePoster(item.stills?.url),
-    description: item.description || "",
-    year: item.releaseDate ? parseInt(item.releaseDate.slice(0, 4)) : undefined,
-    genres: item.genre ? item.genre.split(",").map(g => g.trim()) : [],
-    imdbRating: item.imdbRatingValue || undefined,
-    runtime: item.duration ? `${Math.round(item.duration / 60)} min` : undefined,
-  };
-}
-
-function parseId(id) {
-  const m = id.match(/^mbx_(movie|series)_(.+)$/);
-  return m ? { type: m[1], subjectId: m[2] } : null;
-}
-
-function jsonResp(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
-  });
-}
-
-const MANIFEST = {
-  id: "community.movieboxph", version: "13.0.0",
-  name: "MovieBox", description: "MovieBox — Movies & Series",
-  logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
-  catalogs: [
-    { type: "movie",  id: "mbx_movies", name: "MovieBox Movies",
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
-    { type: "series", id: "mbx_series", name: "MovieBox Series",
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
-  ],
-  resources: ["catalog", "meta", "stream"],
-  types: ["movie", "series"],
-  idPrefixes: ["mbx_"],
-};
-
-export default async function handler(request, context) {
-  const url = new URL(request.url);
-  const pathname = url.pathname;
-  // Get TERMUX_URL from env
-  const TERMUX_URL = (typeof process !== 'undefined' ? process.env.TERMUX_URL : null) || "";
-
-  if (request.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*" } });
+    meta:{
+      id,
+      type,
+      name:item.title,
+      poster:normalizePoster(item.cover?.url),
+      description:item.description || ""
+    }
   }
+})
 
-  try {
-    // Manifest
-    if (pathname === "/manifest.json" || pathname === "/") return jsonResp(MANIFEST);
+builder.defineStreamHandler(async ({type,id})=>{
 
-    // Debug
-    if (pathname === "/debug") {
-      return jsonResp({ termuxUrl: TERMUX_URL || "NOT SET", version: "13.0.0" });
-    }
+  const parts = id.split(":")
 
-    // Catalog
-    const catalogMatch = pathname.match(/^\/catalog\/(movie|series)\/[^/]+(?:\/([^/]+))?\.json$/);
-    if (catalogMatch) {
-      const type = catalogMatch[1];
-      const extraStr = catalogMatch[2] || "";
-      const extra = {};
-      if (extraStr) extraStr.split("&").forEach(part => {
-        const eq = part.indexOf("=");
-        if (eq > 0) extra[decodeURIComponent(part.slice(0, eq))] = decodeURIComponent(part.slice(eq + 1));
-      });
-      if (url.searchParams.get("search")) extra.search = url.searchParams.get("search");
-      if (url.searchParams.get("skip")) extra.skip = url.searchParams.get("skip");
+  const base = parts[0]
 
-      const subjectType = type === "series" ? 2 : 1;
-      const page = Math.floor(parseInt(extra.skip || 0) / CONFIG.PAGE_SIZE) + 1;
-      let items = [];
+  const season = parts[1] ? parseInt(parts[1]) : 0
+  const episode = parts[2] ? parseInt(parts[2]) : 0
 
-      if (extra.search) {
-        const data = await apiPost("/subject/search", { keyword: extra.search, page: String(page), perPage: String(CONFIG.PAGE_SIZE) });
-        items = (data?.items || []).filter(i => i.subjectType === subjectType);
-      } else if (type === "series") {
-        const data = await apiGet("/subject/trending");
-        items = (data?.subjectList || []).filter(i => i.subjectType === 2);
-      } else {
-        const keywords = ["the","a","man","love","war","night","dead","dark","last","world"];
-        const data = await apiPost("/subject/search", { keyword: keywords[(page-1) % keywords.length], page: "1", perPage: String(CONFIG.PAGE_SIZE) });
-        items = (data?.items || []).filter(i => i.subjectType === 1);
-      }
+  const p = parseId(base)
 
-      return jsonResp({ metas: items.filter(i => i.subjectId).map(i => toMeta(i, type)) });
-    }
+  if(!p) return {streams:[]}
 
-    // Meta
-    const metaMatch = pathname.match(/^\/meta\/(movie|series)\/(.+)\.json$/);
-    if (metaMatch) {
-      const type = metaMatch[1];
-      const id = metaMatch[2];
-      const parsed = parseId(id);
-      if (!parsed) return jsonResp({ meta: null });
+  const raw = await fetchStreams(p.subjectId,season,episode)
 
-      let item = itemCache.get(parsed.subjectId) || null;
-      if (!item) {
-        const trendData = await apiGet("/subject/trending");
-        item = (trendData?.subjectList || []).find(i => String(i.subjectId) === parsed.subjectId) || null;
-      }
+  const streams = raw.map(s=>({
 
-      const meta = item ? toMeta(item, type) : { id, type, name: id };
-      meta.id = id;
+    name:"MovieBox",
+    title:`${s.res} ${s.size ? "· "+Math.round(s.size/1024/1024)+"MB":""}`,
+    url:s.url
 
-      if (type === "series") {
-        meta.videos = [];
-        for (let s = 1; s <= 6; s++)
-          for (let ep = 1; ep <= 30; ep++)
-            meta.videos.push({ id: `${id}:${s}:${ep}`, title: `S${s}E${ep}`, season: s, episode: ep, released: new Date(0).toISOString() });
-      }
-      return jsonResp({ meta });
-    }
+  }))
 
-    // Stream — proxy to Termux
-    const streamMatch = pathname.match(/^\/stream\/(movie|series)\/(.+)\.json$/);
-    if (streamMatch) {
-      if (!TERMUX_URL) return jsonResp({ streams: [], error: "TERMUX_URL not set" });
-      try {
-        const termuxPath = `/stream/${streamMatch[1]}/${streamMatch[2]}.json`;
-        const res = await fetch(`${TERMUX_URL.replace(/\/$/, "")}${termuxPath}`, { signal: AbortSignal.timeout(20000) });
-        const data = await res.json();
-        return jsonResp(data);
-      } catch(e) {
-        return jsonResp({ streams: [], error: e.message });
-      }
-    }
+  return {streams}
+})
 
-    return new Response("Not found", { status: 404 });
+serveHTTP(builder.getInterface(),{port:PORT})
 
-  } catch (err) {
-    return new Response("Error: " + err.message, { status: 500 });
-  }
-}
+console.log("MovieBox addon running")
+console.log(`http://localhost:${PORT}/manifest.json`)
