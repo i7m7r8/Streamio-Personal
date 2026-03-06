@@ -16,10 +16,11 @@ const CONFIG = {
   _cookieFetchedAt: 0,
 };
 
-const PROXY_PORT = 7001;
-
-// ---------------- CACHE ----------------
 const cache = new Map();
+const detailPathCache = new Map();
+const itemCache = new Map();
+
+// ---------------- CACHE HELPERS ----------------
 const cacheGet = key => {
   const e = cache.get(key);
   if (!e) return null;
@@ -38,15 +39,15 @@ async function getCookies() {
         "X-Forwarded-For": CONFIG.PH_IP,
         "X-Real-IP": CONFIG.PH_IP,
         "CF-IPCountry": "PH"
-      }, timeout:10000
+      },
+      timeout:10000
     });
     const setCookie = res.headers["set-cookie"] || [];
     CONFIG._cookies = setCookie.length > 0 ? setCookie.map(c=>c.split(";")[0]).join("; ") : "";
     CONFIG._cookieFetchedAt = Date.now();
-    console.log(`🍪 Cookies: ${CONFIG._cookies || "(none)"}`);
   } catch(err) {
-    console.error("Cookie fetch failed:", err.message);
     CONFIG._cookies = "";
+    console.error("Cookie fetch failed:", err.message);
   }
   return CONFIG._cookies;
 }
@@ -65,9 +66,9 @@ async function apiGet(endpoint, params={}) {
   const cached = cacheGet(key);
   if (cached) return cached;
   try {
-    const res = await axios.get(url, { params: { host: CONFIG.PAGE_HOST, ...params }, headers: CATALOG_HEADERS, timeout:15000 });
+    const res = await axios.get(url, { params:{ host: CONFIG.PAGE_HOST, ...params }, headers: CATALOG_HEADERS, timeout:15000 });
     if (res.data?.code !== 0) return null;
-    cacheSet(key, res.data.data);
+    cacheSet(key,res.data.data);
     return res.data.data;
   } catch(err) { console.error(`GET [${endpoint}]:`, err.message); return null; }
 }
@@ -80,7 +81,7 @@ async function apiPost(endpoint, body={}) {
   try {
     const res = await axios.post(url, { host: CONFIG.PAGE_HOST, ...body }, { headers:{...CATALOG_HEADERS,"Content-Type":"application/json"}, timeout:15000 });
     if (res.data?.code !== 0) return null;
-    cacheSet(key, res.data.data);
+    cacheSet(key,res.data.data);
     return res.data.data;
   } catch(err) { console.error(`POST [${endpoint}]:`, err.message); return null; }
 }
@@ -93,39 +94,40 @@ async function fetchStreams(subjectId, se=0, ep=0) {
   const cookies = await getCookies();
   try {
     const res = await axios.get(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/play`, {
-      params: { subjectId, se, ep },
-      headers: {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": `https://h5.aoneroom.com/movies/${subjectId}`,
-        "Cookie": cookies,
-        "X-Forwarded-For": CONFIG.PH_IP,
-        "X-Real-IP": CONFIG.PH_IP,
-        "CF-IPCountry": "PH"
+      params:{ subjectId, se, ep },
+      headers:{
+        "User-Agent":"Mozilla/5.0",
+        "Referer":`https://h5.aoneroom.com/movies/${subjectId}`,
+        "Cookie":cookies,
+        "X-Forwarded-For":CONFIG.PH_IP,
+        "X-Real-IP":CONFIG.PH_IP,
+        "CF-IPCountry":"PH"
       },
       timeout:15000
     });
-    if (res.data?.code!==0) return [];
+    if (res.data?.code !== 0) return [];
     const streams = res.data?.data?.streams || [];
-    cacheSet(key, streams);
+    cacheSet(key,streams);
     return streams;
-  } catch(err) { console.error("Stream fetch failed:", err.message); return []; }
+  } catch(err){ console.error("Stream fetch failed:", err.message); return []; }
 }
 
 // ---------------- HELPERS ----------------
-function toMeta(item, type) {
-  const subjectId = String(item.subjectId || "");
+function toMeta(item,type){
+  const subjectId = String(item.subjectId||"");
+  if(item.detailPath) detailPathCache.set(subjectId,item.detailPath);
+  itemCache.set(subjectId,item);
   return {
-    id: `mbx_${type}_${subjectId}`,
+    id:`mbx_${type}_${subjectId}`,
     type,
-    name: item.title || "Unknown",
-    poster: item.cover?.url ? `https://pbcdnw.aoneroom.com${item.cover.url}` : null,
-    description: item.description || "",
+    name:item.title||"Unknown",
+    poster:item.cover?.url?`https://pbcdnw.aoneroom.com${item.cover.url}`:null,
+    description:item.description||"",
   };
 }
-
-function parseId(id) {
+function parseId(id){
   const m = id.match(/^mbx_(movie|series)_(.+)$/);
-  return m ? { type:m[1], subjectId:m[2] } : null;
+  return m?{ type:m[1], subjectId:m[2] }:null;
 }
 
 // ---------------- MANIFEST ----------------
@@ -143,14 +145,13 @@ const manifest = {
   types:["movie","series"],
   idPrefixes:["mbx_"]
 };
-
 const builder = new addonBuilder(manifest);
 
 // ---------------- CATALOG ----------------
-builder.defineCatalogHandler(async ({ type, extra }) => {
-  let items = [];
-  if (extra?.search) {
-    const data = await apiPost("/subject/search",{ keyword: extra.search, page:"1", perPage: CONFIG.PAGE_SIZE });
+builder.defineCatalogHandler(async ({ type, extra })=>{
+  let items=[];
+  if(extra?.search){
+    const data = await apiPost("/subject/search",{ keyword:extra.search, page:"1", perPage:CONFIG.PAGE_SIZE });
     items = (data?.items||[]).filter(i=>i.subjectType=== (type==="series"?2:1));
   } else {
     const data = await apiGet("/subject/trending");
@@ -161,25 +162,23 @@ builder.defineCatalogHandler(async ({ type, extra }) => {
 });
 
 // ---------------- META ----------------
-builder.defineMetaHandler(async ({ id }) => {
+builder.defineMetaHandler(async ({ id })=>{
   const parsed = parseId(id);
-  if (!parsed) return { meta:null };
+  if(!parsed) return { meta:null };
   const type = parsed.type;
   const subjectId = parsed.subjectId;
-
   const data = await apiGet("/subject/detail",{ subjectId });
-  if (!data) return { meta:null };
+  if(!data) return { meta:null };
   const meta = toMeta(data,type);
   return { meta };
 });
 
 // ---------------- STREAM ----------------
-builder.defineStreamHandler(async ({ id }) => {
+builder.defineStreamHandler(async ({ id })=>{
   const parsed = parseId(id);
-  if (!parsed) return { streams: [] };
-
+  if(!parsed) return { streams:[] };
   const streams = await fetchStreams(parsed.subjectId,0,0);
-  return { streams: streams.map(s=>({ title: s.resolutions+"p", url: s.url })) };
+  return { streams: streams.map(s=>({ title:s.resolutions+"p", url:s.url })) };
 });
 
 // ---------------- EXPORT FOR VERCEL ----------------
