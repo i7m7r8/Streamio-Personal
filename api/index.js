@@ -210,41 +210,15 @@ function jsonResp(data, status = 200) {
   });
 }
 
-// Genre catalog definitions
-const MOVIE_GENRES = [
-  { id: "mbx_movies_trending", name: "🔥 Trending Movies",  keyword: "trending", type: "movie" },
-  { id: "mbx_movies_action",   name: "💥 Action Movies",    keyword: "action",   type: "movie" },
-  { id: "mbx_movies_drama",    name: "🎭 Drama Movies",     keyword: "drama",    type: "movie" },
-  { id: "mbx_movies_comedy",   name: "😂 Comedy Movies",    keyword: "comedy",   type: "movie" },
-  { id: "mbx_movies_horror",   name: "👻 Horror Movies",    keyword: "horror",   type: "movie" },
-  { id: "mbx_movies_hindi",    name: "🇮🇳 Hindi Movies",    keyword: "hindi",    type: "movie" },
-];
-
-const SERIES_GENRES = [
-  { id: "mbx_series_trending", name: "🔥 Trending Series",  keyword: "trending", type: "series" },
-  { id: "mbx_series_action",   name: "💥 Action Series",    keyword: "action",   type: "series" },
-  { id: "mbx_series_drama",    name: "🎭 Drama Series",     keyword: "drama",    type: "series" },
-  { id: "mbx_series_comedy",   name: "😂 Comedy Series",    keyword: "comedy",   type: "series" },
-  { id: "mbx_series_hindi",    name: "🇮🇳 Hindi Series",    keyword: "hindi",    type: "series" },
-  { id: "mbx_series_korean",   name: "🇰🇷 Korean Series",   keyword: "korean",   type: "series" },
-];
-
-const ALL_GENRES = [...MOVIE_GENRES, ...SERIES_GENRES];
-
 const MANIFEST = {
-  id: "community.movieboxph", version: "15.2.0",
-  name: "MovieBox 🎬", description: "MovieBox — Movies & Series with Genres, Dubbed & Subtitles",
+  id: "community.movieboxph", version: "15.3.0",
+  name: "MovieBox", description: "MovieBox — Movies & Series with Dubbed & Subtitles",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
-  behaviorHints: { adult: false, p2p: false, configurable: false },
   catalogs: [
-    ...MOVIE_GENRES.map(g => ({
-      type: "movie", id: g.id, name: g.name,
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
-    })),
-    ...SERIES_GENRES.map(g => ({
-      type: "series", id: g.id, name: g.name,
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
-    })),
+    { type: "movie",  id: "mbx_movies",  name: "MovieBox Movies",
+      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+    { type: "series", id: "mbx_series",  name: "MovieBox Series",
+      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
   ],
   resources: ["catalog", "meta", "stream"],
   types: ["movie", "series"],
@@ -268,11 +242,10 @@ export default async function handler(request) {
     }
 
     // Catalog
-    const catalogMatch = pathname.match(/^\/catalog\/(movie|series)\/([^/]+)(?:\/([^/]+))?\.json$/);
+    const catalogMatch = pathname.match(/^\/catalog\/(movie|series)\/[^/]+(?:\/([^/]+))?\.json$/);
     if (catalogMatch) {
       const type = catalogMatch[1];
-      const catalogId = catalogMatch[2];
-      const extraStr = catalogMatch[3] || "";
+      const extraStr = catalogMatch[2] || "";
       const extra = {};
       if (extraStr) extraStr.split("&").forEach(part => {
         const eq = part.indexOf("=");
@@ -281,7 +254,6 @@ export default async function handler(request) {
       if (url.searchParams.get("search")) extra.search = url.searchParams.get("search");
       if (url.searchParams.get("skip")) extra.skip = url.searchParams.get("skip");
 
-      const genre = ALL_GENRES.find(g => g.id === catalogId);
       const subjectType = type === "series" ? 2 : 1;
       const page = Math.floor(parseInt(extra.skip || 0) / CONFIG.PAGE_SIZE) + 1;
       let items = [];
@@ -289,24 +261,13 @@ export default async function handler(request) {
       if (extra.search) {
         const data = await apiPost("/subject/search", { keyword: extra.search, page: String(page), perPage: String(CONFIG.PAGE_SIZE) });
         items = (data?.items || []).filter(i => i.subjectType === subjectType);
-      } else if (genre?.keyword === "trending") {
-        if (subjectType === 2) {
-          const data = await apiGet("/subject/trending");
-          items = (data?.subjectList || []).filter(i => i.subjectType === 2);
-        } else {
-          const data = await apiPost("/subject/search-rank", {});
-          items = (data?.items || data?.subjectList || []).filter(i => i.subjectType === 1);
-          if (!items.length) {
-            const d2 = await apiPost("/subject/search", { keyword: "popular", page: String(page), perPage: String(CONFIG.PAGE_SIZE) });
-            items = (d2?.items || []).filter(i => i.subjectType === 1);
-          }
-        }
-      } else if (genre) {
-        const data = await apiPost("/subject/search", { keyword: genre.keyword, page: String(page), perPage: String(CONFIG.PAGE_SIZE) });
-        items = (data?.items || []).filter(i => i.subjectType === subjectType);
-      } else {
+      } else if (type === "series") {
         const data = await apiGet("/subject/trending");
-        items = (data?.subjectList || []).filter(i => i.subjectType === subjectType);
+        items = (data?.subjectList || []).filter(i => i.subjectType === 2);
+      } else {
+        const keywords = ["love","action","drama","war","night","dead","dark","last","world","best"];
+        const data = await apiPost("/subject/search", { keyword: keywords[(page-1) % keywords.length], page: "1", perPage: String(CONFIG.PAGE_SIZE) });
+        items = (data?.items || []).filter(i => i.subjectType === 1);
       }
 
       return jsonResp({ metas: items.filter(i => i.subjectId).map(i => toMeta(i, type)) });
