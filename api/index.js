@@ -206,7 +206,7 @@ function jsonResp(data, status = 200) {
 }
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "14.7.0",
+  id: "community.movieboxph", version: "14.8.0",
   name: "MovieBox", description: "MovieBox — Movies & Series",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
@@ -279,6 +279,7 @@ export default async function handler(request) {
       if (!parsed) return jsonResp({ meta: null });
 
       // Fetch full detail for real episode counts
+      await ensureCookies();
       const detail = await fetch(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/detail?subjectId=${parsed.subjectId}`, {
         headers: { ...BASE_HEADERS, "Cookie": buildCookieHeader(_cookies) }
       }).then(r => r.json()).catch(() => null);
