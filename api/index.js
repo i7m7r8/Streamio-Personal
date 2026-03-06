@@ -10,7 +10,6 @@ const CONFIG = {
   PH_IP:       "112.198.0.1",
 };
 
-// Persistent cookie store across warm instances
 let _cookies = {};
 let _cookieFetchedAt = 0;
 
@@ -45,10 +44,7 @@ async function ensureCookies() {
     const setCookie = res.headers.get("set-cookie") || "";
     _cookies = parseCookies(setCookie);
     _cookieFetchedAt = Date.now();
-    console.log("Cookies:", JSON.stringify(_cookies));
-  } catch (e) {
-    console.error("Cookie fetch failed:", e.message);
-  }
+  } catch (e) { console.error("Cookie fetch failed:", e.message); }
 }
 
 const BASE_HEADERS = {
@@ -95,9 +91,21 @@ async function apiPost(endpoint, body = {}) {
 const detailPathCache = new Map();
 const itemCache = new Map();
 
+async function fetchDetail(subjectId) {
+  await ensureCookies();
+  const res = await fetch(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/detail?subjectId=${subjectId}`, {
+    headers: { ...BASE_HEADERS, "Cookie": buildCookieHeader(_cookies) }
+  }).then(r => r.json()).catch(() => null);
+  if (res?.data?.subject) {
+    const s = res.data.subject;
+    itemCache.set(subjectId, s);
+    if (s.detailPath) detailPathCache.set(subjectId, s.detailPath);
+  }
+  return res?.data || null;
+}
+
 async function fetchStreams(subjectId, detailPath, se, ep) {
   await ensureCookies();
-  const referer = `${CONFIG.STREAM_HOST}/movies/${detailPath || subjectId}`;
   try {
     const url = new URL(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/play`);
     url.searchParams.set("subjectId", subjectId);
@@ -106,19 +114,15 @@ async function fetchStreams(subjectId, detailPath, se, ep) {
     const res = await fetch(url.toString(), {
       headers: {
         ...BASE_HEADERS,
-        "Referer": referer,
+        "Referer": `${CONFIG.STREAM_HOST}/movies/${detailPath || subjectId}`,
         "Origin": CONFIG.STREAM_HOST,
         "Cookie": buildCookieHeader(_cookies),
       }
     });
     const d = await res.json();
-    console.log(`Stream response: code=${d?.code} hasResource=${d?.data?.hasResource} streams=${d?.data?.streams?.length}`);
     if (d?.code !== 0 || !d?.data?.streams?.length) return [];
     return d.data.streams;
-  } catch (e) {
-    console.error("fetchStreams error:", e.message);
-    return [];
-  }
+  } catch { return []; }
 }
 
 async function fetchCaptions(streamId, subjectId) {
@@ -143,6 +147,7 @@ const DUB_LANGS = [
   { keyword: "turkish", label: "Turkish Dub" },
   { keyword: "urdu",    label: "Urdu Dub" },
   { keyword: "spanish", label: "Spanish Dub" },
+  { keyword: "korean",  label: "Korean Dub" },
 ];
 
 async function findDubbedSubjects(title, type) {
@@ -160,11 +165,11 @@ async function findDubbedSubjects(title, type) {
       const items = (d.data?.items || []).filter(i =>
         i.subjectType === subjectType &&
         i.title?.toLowerCase().includes(keyword) &&
-        i.title?.toLowerCase().includes(title.toLowerCase().slice(0, 6))
+        i.title?.toLowerCase().includes(title.toLowerCase().slice(0, 5))
       );
       for (const item of items.slice(0, 1)) {
         if (item.detailPath) detailPathCache.set(String(item.subjectId), item.detailPath);
-        results.push({ subjectId: String(item.subjectId), label, detailPath: item.detailPath || "", title: item.title });
+        results.push({ subjectId: String(item.subjectId), label, detailPath: item.detailPath || "" });
       }
     } catch {}
   }));
@@ -184,7 +189,7 @@ function toMeta(item, type) {
     id: `mbx_${type}_${subjectId}`, type,
     name: item.title || "Unknown",
     poster: normalizePoster(item.cover?.url),
-    background: normalizePoster(item.stills?.url),
+    background: normalizePoster(item.stills?.url || item.cover?.url),
     description: item.description || "",
     year: item.releaseDate ? parseInt(item.releaseDate.slice(0, 4)) : undefined,
     genres: item.genre ? item.genre.split(",").map(g => g.trim()) : [],
@@ -205,15 +210,40 @@ function jsonResp(data, status = 200) {
   });
 }
 
+// Genre catalog definitions
+const MOVIE_GENRES = [
+  { id: "mbx_movies_trending", name: "🔥 Trending Movies",  keyword: "trending", type: "movie" },
+  { id: "mbx_movies_action",   name: "💥 Action Movies",    keyword: "action",   type: "movie" },
+  { id: "mbx_movies_drama",    name: "🎭 Drama Movies",     keyword: "drama",    type: "movie" },
+  { id: "mbx_movies_comedy",   name: "😂 Comedy Movies",    keyword: "comedy",   type: "movie" },
+  { id: "mbx_movies_horror",   name: "👻 Horror Movies",    keyword: "horror",   type: "movie" },
+  { id: "mbx_movies_hindi",    name: "🇮🇳 Hindi Movies",    keyword: "hindi",    type: "movie" },
+];
+
+const SERIES_GENRES = [
+  { id: "mbx_series_trending", name: "🔥 Trending Series",  keyword: "trending", type: "series" },
+  { id: "mbx_series_action",   name: "💥 Action Series",    keyword: "action",   type: "series" },
+  { id: "mbx_series_drama",    name: "🎭 Drama Series",     keyword: "drama",    type: "series" },
+  { id: "mbx_series_comedy",   name: "😂 Comedy Series",    keyword: "comedy",   type: "series" },
+  { id: "mbx_series_hindi",    name: "🇮🇳 Hindi Series",    keyword: "hindi",    type: "series" },
+  { id: "mbx_series_korean",   name: "🇰🇷 Korean Series",   keyword: "korean",   type: "series" },
+];
+
+const ALL_GENRES = [...MOVIE_GENRES, ...SERIES_GENRES];
+
 const MANIFEST = {
-  id: "community.movieboxph", version: "14.9.0",
-  name: "MovieBox", description: "MovieBox — Movies & Series",
+  id: "community.movieboxph", version: "15.0.0",
+  name: "MovieBox 🎬", description: "MovieBox — Movies & Series with Genres, Dubbed & Subtitles",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
-    { type: "movie",  id: "mbx_movies", name: "MovieBox Movies",
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
-    { type: "series", id: "mbx_series", name: "MovieBox Series",
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+    ...MOVIE_GENRES.map(g => ({
+      type: "movie", id: g.id, name: g.name,
+      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
+    })),
+    ...SERIES_GENRES.map(g => ({
+      type: "series", id: g.id, name: g.name,
+      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
+    })),
   ],
   resources: ["catalog", "meta", "stream"],
   types: ["movie", "series"],
@@ -229,20 +259,19 @@ export default async function handler(request) {
   }
 
   try {
-    // Manifest
     if (pathname === "/manifest.json" || pathname === "/") return jsonResp(MANIFEST);
 
-    // Debug
     if (pathname === "/debug") {
       await ensureCookies();
-      return jsonResp({ version: "14.0.0", cookies: Object.keys(_cookies) });
+      return jsonResp({ version: "15.0.0", cookies: Object.keys(_cookies) });
     }
 
     // Catalog
-    const catalogMatch = pathname.match(/^\/catalog\/(movie|series)\/[^/]+(?:\/([^/]+))?\.json$/);
+    const catalogMatch = pathname.match(/^\/catalog\/(movie|series)\/([^/]+)(?:\/([^/]+))?\.json$/);
     if (catalogMatch) {
       const type = catalogMatch[1];
-      const extraStr = catalogMatch[2] || "";
+      const catalogId = catalogMatch[2];
+      const extraStr = catalogMatch[3] || "";
       const extra = {};
       if (extraStr) extraStr.split("&").forEach(part => {
         const eq = part.indexOf("=");
@@ -251,6 +280,7 @@ export default async function handler(request) {
       if (url.searchParams.get("search")) extra.search = url.searchParams.get("search");
       if (url.searchParams.get("skip")) extra.skip = url.searchParams.get("skip");
 
+      const genre = ALL_GENRES.find(g => g.id === catalogId);
       const subjectType = type === "series" ? 2 : 1;
       const page = Math.floor(parseInt(extra.skip || 0) / CONFIG.PAGE_SIZE) + 1;
       let items = [];
@@ -258,13 +288,15 @@ export default async function handler(request) {
       if (extra.search) {
         const data = await apiPost("/subject/search", { keyword: extra.search, page: String(page), perPage: String(CONFIG.PAGE_SIZE) });
         items = (data?.items || []).filter(i => i.subjectType === subjectType);
-      } else if (type === "series") {
+      } else if (genre?.keyword === "trending") {
         const data = await apiGet("/subject/trending");
-        items = (data?.subjectList || []).filter(i => i.subjectType === 2);
+        items = (data?.subjectList || []).filter(i => i.subjectType === subjectType);
+      } else if (genre) {
+        const data = await apiPost("/subject/search", { keyword: genre.keyword, page: String(page), perPage: String(CONFIG.PAGE_SIZE) });
+        items = (data?.items || []).filter(i => i.subjectType === subjectType);
       } else {
-        const keywords = ["the","a","man","love","war","night","dead","dark","last","world"];
-        const data = await apiPost("/subject/search", { keyword: keywords[(page-1) % keywords.length], page: "1", perPage: String(CONFIG.PAGE_SIZE) });
-        items = (data?.items || []).filter(i => i.subjectType === 1);
+        const data = await apiGet("/subject/trending");
+        items = (data?.subjectList || []).filter(i => i.subjectType === subjectType);
       }
 
       return jsonResp({ metas: items.filter(i => i.subjectId).map(i => toMeta(i, type)) });
@@ -278,25 +310,19 @@ export default async function handler(request) {
       const parsed = parseId(id);
       if (!parsed) return jsonResp({ meta: null });
 
-      // Fetch full detail for real episode counts
-      await ensureCookies();
-      const detail = await fetch(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/detail?subjectId=${parsed.subjectId}`, {
-        headers: { ...BASE_HEADERS, "Cookie": buildCookieHeader(_cookies) }
-      }).then(r => r.json()).catch(() => null);
-
-      const subjectData = detail?.data?.subject || null;
-      let item = itemCache.get(parsed.subjectId) || subjectData || null;
-      if (subjectData) {
-        if (subjectData.detailPath) detailPathCache.set(parsed.subjectId, subjectData.detailPath);
-        itemCache.set(parsed.subjectId, subjectData);
-      }
+      const detail = await fetchDetail(parsed.subjectId);
+      const subjectData = detail?.subject || null;
+      const item = itemCache.get(parsed.subjectId) || subjectData || null;
 
       const meta = item ? toMeta(item, type) : { id, type, name: id };
       meta.id = id;
 
+      // Real release date from subject
+      if (subjectData?.releaseDate) meta.released = subjectData.releaseDate;
+
       if (type === "series") {
         meta.videos = [];
-        const seasons = detail?.data?.resource?.seasons || detail?.data?.seasons || [];
+        const seasons = detail?.resource?.seasons || [];
         if (seasons.length > 0) {
           for (const season of seasons) {
             const maxEp = season.maxEp || 1;
@@ -311,16 +337,15 @@ export default async function handler(request) {
             }
           }
         } else {
-          // Fallback if no season data
-          for (let s = 1; s <= 4; s++)
-            for (let ep = 1; ep <= 20; ep++)
+          for (let s = 1; s <= 3; s++)
+            for (let ep = 1; ep <= 15; ep++)
               meta.videos.push({ id: `${id}:${s}:${ep}`, title: `S${s}E${ep}`, season: s, episode: ep, released: new Date(0).toISOString() });
         }
       }
       return jsonResp({ meta });
     }
 
-    // Proxy — adds Referer header for CDN video files
+    // Proxy
     if (pathname === "/proxy") {
       const target = url.searchParams.get("url");
       if (!target) return new Response("Missing url", { status: 400 });
@@ -354,22 +379,12 @@ export default async function handler(request) {
       const se = type === "movie" ? 0 : parseInt(parts[1] || 1);
       const ep = type === "movie" ? 0 : parseInt(parts[2] || 1);
 
-      // Fetch detail once — gets detailPath, title, and item info
-      await ensureCookies();
-      const detailRes = await fetch(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/detail?subjectId=${parsed.subjectId}`, {
-        headers: { ...BASE_HEADERS, "Cookie": buildCookieHeader(_cookies) }
-      }).then(r => r.json()).catch(() => null);
-
-      const subjectDetail = detailRes?.data?.subject || null;
-      if (subjectDetail) {
-        itemCache.set(parsed.subjectId, subjectDetail);
-        if (subjectDetail.detailPath) detailPathCache.set(parsed.subjectId, subjectDetail.detailPath);
-      }
-
+      // Fetch detail for detailPath + title
+      const detail = await fetchDetail(parsed.subjectId);
       const finalDetailPath = detailPathCache.get(parsed.subjectId) || parsed.subjectId;
-      const itemTitle = subjectDetail?.title || itemCache.get(parsed.subjectId)?.title || "";
+      const itemTitle = detail?.subject?.title || itemCache.get(parsed.subjectId)?.title || "";
 
-      // Fetch original streams + dubbed versions in parallel
+      // Fetch original streams + dubbed subjects in parallel
       const [rawStreams, dubbedSubjects] = await Promise.all([
         fetchStreams(parsed.subjectId, finalDetailPath, se, ep),
         itemTitle ? findDubbedSubjects(itemTitle, type) : Promise.resolve([])
@@ -377,7 +392,7 @@ export default async function handler(request) {
 
       if (!rawStreams.length) return jsonResp({ streams: [] });
 
-      // Fetch subtitles + dubbed streams in parallel
+      // Fetch captions + dubbed streams in parallel
       const [captions, ...dubbedStreamArrays] = await Promise.all([
         fetchCaptions(rawStreams[0].id, parsed.subjectId),
         ...dubbedSubjects.map(dub => fetchStreams(dub.subjectId, dub.detailPath, se, ep))
@@ -389,28 +404,24 @@ export default async function handler(request) {
       const qualityOrder = { "1080": 0, "720": 1, "480": 2, "360": 3 };
       const host = request.headers.get("host");
 
-      const buildStreamEntry = (s, label) => {
-        const quality = s.resolutions ? `${s.resolutions}p` : "HD";
-        const sizeMB = s.size ? ` · ${Math.round(parseInt(s.size)/1024/1024)}MB` : "";
-        return {
-          url: `https://${host}/proxy?url=${encodeURIComponent(s.url)}`,
-          name: "MovieBox 🎬",
-          title: `${quality}${sizeMB} · ${label}`,
-          subtitles,
-          behaviorHints: { notWebReady: true, bingeGroup: `mbx-${parsed.subjectId}` }
-        };
-      };
+      const buildEntry = (s, label) => ({
+        url: `https://${host}/proxy?url=${encodeURIComponent(s.url)}`,
+        name: "MovieBox 🎬",
+        title: `${s.resolutions ? s.resolutions + "p" : "HD"}${s.size ? " · " + Math.round(parseInt(s.size)/1024/1024) + "MB" : ""} · ${label}`,
+        subtitles,
+        behaviorHints: { notWebReady: true, bingeGroup: `mbx-${parsed.subjectId}` }
+      });
 
       const streams = rawStreams
         .filter(s => s.url)
         .sort((a, b) => (qualityOrder[a.resolutions] ?? 99) - (qualityOrder[b.resolutions] ?? 99))
-        .map(s => buildStreamEntry(s, "Original Audio"));
+        .map(s => buildEntry(s, "Original Audio"));
 
       for (const { label, streams: dubStreams } of dubbedResults) {
         dubStreams
           .filter(s => s.url)
           .sort((a, b) => (qualityOrder[a.resolutions] ?? 99) - (qualityOrder[b.resolutions] ?? 99))
-          .forEach(s => streams.push(buildStreamEntry(s, label)));
+          .forEach(s => streams.push(buildEntry(s, label)));
       }
 
       return jsonResp({ streams });
