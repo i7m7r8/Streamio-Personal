@@ -1,13 +1,10 @@
 export const config = { runtime: "edge" };
 
 const CONFIG = {
-  API_BASE:    "https://h5-api.aoneroom.com",
-  BFF:         "/wefeed-h5api-bff",
-  PAGE_HOST:   "h5.aoneroom.com",
-  STREAM_HOST: "https://h5.aoneroom.com",
-  STREAM_BFF:  "/wefeed-h5-bff",
-  PAGE_SIZE:   24,
-  PH_IP:       "112.198.0.1",
+  API_BASE:   "https://h5-api.aoneroom.com",
+  BFF:        "/wefeed-h5api-bff",
+  PAGE_HOST:  "h5.aoneroom.com",
+  PAGE_SIZE:  24,
 };
 
 const CATALOG_HEADERS = {
@@ -16,22 +13,6 @@ const CATALOG_HEADERS = {
   "Origin": "https://h5.aoneroom.com",
   "Referer": "https://h5.aoneroom.com/",
 };
-
-let _cookies = null;
-let _cookieFetchedAt = 0;
-
-async function getCookies() {
-  if (_cookies !== null && (Date.now() - _cookieFetchedAt < 25 * 60 * 1000)) return _cookies;
-  try {
-    const res = await fetch(`${CONFIG.STREAM_HOST}/wefeed-h5-bff/app/get-latest-app-pkgs?app_name=moviebox`, {
-      headers: { "User-Agent": "Mozilla/5.0", "X-Forwarded-For": CONFIG.PH_IP, "X-Real-IP": CONFIG.PH_IP, "CF-IPCountry": "PH" }
-    });
-    const setCookie = res.headers.get("set-cookie") || "";
-    _cookies = setCookie ? setCookie.split(";")[0] : "";
-    _cookieFetchedAt = Date.now();
-  } catch { _cookies = ""; }
-  return _cookies;
-}
 
 async function apiGet(endpoint, params = {}) {
   const url = new URL(CONFIG.API_BASE + CONFIG.BFF + endpoint);
@@ -46,9 +27,8 @@ async function apiGet(endpoint, params = {}) {
 }
 
 async function apiPost(endpoint, body = {}) {
-  const url = CONFIG.API_BASE + CONFIG.BFF + endpoint;
   try {
-    const res = await fetch(url, {
+    const res = await fetch(CONFIG.API_BASE + CONFIG.BFF + endpoint, {
       method: "POST",
       headers: { ...CATALOG_HEADERS, "Content-Type": "application/json" },
       body: JSON.stringify({ host: CONFIG.PAGE_HOST, ...body })
@@ -57,31 +37,6 @@ async function apiPost(endpoint, body = {}) {
     if (d?.code !== 0) return null;
     return d.data;
   } catch { return null; }
-}
-
-async function fetchStreams(subjectId, se, ep) {
-  const cookies = await getCookies();
-  try {
-    const url = new URL(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/play`);
-    url.searchParams.set("subjectId", subjectId);
-    url.searchParams.set("se", se);
-    url.searchParams.set("ep", ep);
-    const res = await fetch(url.toString(), {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
-        "Accept": "application/json",
-        "Origin": "https://h5.aoneroom.com",
-        "Referer": `https://h5.aoneroom.com/movies/${subjectId}`,
-        "Cookie": cookies,
-        "X-Forwarded-For": CONFIG.PH_IP,
-        "X-Real-IP": CONFIG.PH_IP,
-        "CF-IPCountry": "PH",
-      }
-    });
-    const d = await res.json();
-    if (d?.code !== 0 || !d?.data?.streams?.length) return { streams: [], hasResource: d?.data?.hasResource };
-    return { streams: d.data.streams, hasResource: true };
-  } catch (e) { return { streams: [], error: e.message }; }
 }
 
 function normalizePoster(url) {
@@ -120,7 +75,7 @@ function jsonResp(data, status = 200) {
 }
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "12.0.0",
+  id: "community.movieboxph", version: "13.0.0",
   name: "MovieBox", description: "MovieBox — Movies & Series",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
@@ -134,9 +89,11 @@ const MANIFEST = {
   idPrefixes: ["mbx_"],
 };
 
-export default async function handler(request) {
+export default async function handler(request, context) {
   const url = new URL(request.url);
   const pathname = url.pathname;
+  // Get TERMUX_URL from env
+  const TERMUX_URL = (typeof process !== 'undefined' ? process.env.TERMUX_URL : null) || "";
 
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*" } });
@@ -147,10 +104,8 @@ export default async function handler(request) {
     if (pathname === "/manifest.json" || pathname === "/") return jsonResp(MANIFEST);
 
     // Debug
-    const debugMatch = pathname.match(/^\/debug\/([^/]+)\/([^/]+)\/([^/]+)$/);
-    if (debugMatch) {
-      const result = await fetchStreams(debugMatch[1], debugMatch[2], debugMatch[3]);
-      return jsonResp(result);
+    if (pathname === "/debug") {
+      return jsonResp({ termuxUrl: TERMUX_URL || "NOT SET", version: "13.0.0" });
     }
 
     // Catalog
@@ -211,33 +166,18 @@ export default async function handler(request) {
       return jsonResp({ meta });
     }
 
-    // Stream
+    // Stream — proxy to Termux
     const streamMatch = pathname.match(/^\/stream\/(movie|series)\/(.+)\.json$/);
     if (streamMatch) {
-      const type = streamMatch[1];
-      const id = decodeURIComponent(streamMatch[2]);
-      const parts = id.split(":");
-      const parsed = parseId(parts[0]);
-      if (!parsed) return jsonResp({ streams: [] });
-
-      const se = type === "movie" ? 0 : parseInt(parts[1] || 0);
-      const ep = type === "movie" ? 0 : parseInt(parts[2] || 0);
-
-      const { streams: rawStreams } = await fetchStreams(parsed.subjectId, se, ep);
-      if (!rawStreams.length) return jsonResp({ streams: [] });
-
-      const qualityOrder = { "1080": 0, "720": 1, "480": 2, "360": 3 };
-      const streams = rawStreams
-        .filter(s => s.url)
-        .sort((a, b) => (qualityOrder[a.resolutions] ?? 99) - (qualityOrder[b.resolutions] ?? 99))
-        .map(s => ({
-          url: s.url,
-          name: "MovieBox",
-          title: `${s.resolutions ? s.resolutions + "p" : "HD"}${s.size ? " · " + Math.round(parseInt(s.size)/1024/1024) + "MB" : ""}`,
-          behaviorHints: { notWebReady: true, bingeGroup: `mbx-${parsed.subjectId}` }
-        }));
-
-      return jsonResp({ streams });
+      if (!TERMUX_URL) return jsonResp({ streams: [], error: "TERMUX_URL not set" });
+      try {
+        const termuxPath = `/stream/${streamMatch[1]}/${streamMatch[2]}.json`;
+        const res = await fetch(`${TERMUX_URL.replace(/\/$/, "")}${termuxPath}`, { signal: AbortSignal.timeout(20000) });
+        const data = await res.json();
+        return jsonResp(data);
+      } catch(e) {
+        return jsonResp({ streams: [], error: e.message });
+      }
     }
 
     return new Response("Not found", { status: 404 });
