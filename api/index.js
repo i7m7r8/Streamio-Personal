@@ -146,8 +146,6 @@ const DUB_LANGS = [
   { keyword: "french",  label: "French Dub" },
   { keyword: "turkish", label: "Turkish Dub" },
   { keyword: "urdu",    label: "Urdu Dub" },
-  { keyword: "spanish", label: "Spanish Dub" },
-  { keyword: "korean",  label: "Korean Dub" },
 ];
 
 async function findDubbedSubjects(title, type) {
@@ -158,7 +156,8 @@ async function findDubbedSubjects(title, type) {
       const res = await fetch(CONFIG.API_BASE + CONFIG.BFF + "/subject/search", {
         method: "POST",
         headers: { ...CATALOG_HEADERS, "Content-Type": "application/json" },
-        body: JSON.stringify({ host: CONFIG.PAGE_HOST, keyword: `${title} ${keyword}`, page: "1", perPage: "3" })
+        body: JSON.stringify({ host: CONFIG.PAGE_HOST, keyword: `${title} ${keyword}`, page: "1", perPage: "3" }),
+        signal: AbortSignal.timeout(4000)
       });
       const d = await res.json();
       if (d?.code !== 0) return;
@@ -211,7 +210,7 @@ function jsonResp(data, status = 200) {
 }
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "15.3.0",
+  id: "community.movieboxph", version: "15.4.0",
   name: "MovieBox", description: "MovieBox — Movies & Series with Dubbed & Subtitles",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
