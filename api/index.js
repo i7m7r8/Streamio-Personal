@@ -156,7 +156,7 @@ function jsonResp(data, status = 200) {
 }
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "14.0.0",
+  id: "community.movieboxph", version: "14.1.0",
   name: "MovieBox", description: "MovieBox — Movies & Series",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
@@ -246,6 +246,28 @@ export default async function handler(request) {
       return jsonResp({ meta });
     }
 
+    // Proxy — adds Referer header for CDN video files
+    if (pathname === "/proxy") {
+      const target = url.searchParams.get("url");
+      if (!target) return new Response("Missing url", { status: 400 });
+      const range = request.headers.get("range") || "";
+      const proxyRes = await fetch(target, {
+        headers: {
+          "Referer": "https://fmoviesunblocked.net/",
+          "Origin": "https://fmoviesunblocked.net",
+          "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
+          ...(range ? { "Range": range } : {}),
+        }
+      });
+      const headers = new Headers();
+      headers.set("Access-Control-Allow-Origin", "*");
+      headers.set("Content-Type", proxyRes.headers.get("content-type") || "video/mp4");
+      headers.set("Accept-Ranges", "bytes");
+      if (proxyRes.headers.get("content-length")) headers.set("Content-Length", proxyRes.headers.get("content-length"));
+      if (proxyRes.headers.get("content-range")) headers.set("Content-Range", proxyRes.headers.get("content-range"));
+      return new Response(proxyRes.body, { status: proxyRes.status, headers });
+    }
+
     // Stream
     const streamMatch = pathname.match(/^\/stream\/(movie|series)\/(.+)\.json$/);
     if (streamMatch) {
@@ -276,7 +298,7 @@ export default async function handler(request) {
         .filter(s => s.url)
         .sort((a, b) => (qualityOrder[a.resolutions] ?? 99) - (qualityOrder[b.resolutions] ?? 99))
         .map(s => ({
-          url: s.url,
+          url: `https://${request.headers.get("host")}/proxy?url=${encodeURIComponent(s.url)}`,
           name: "MovieBox",
           title: `${s.resolutions ? s.resolutions + "p" : "HD"}${s.size ? " · " + Math.round(parseInt(s.size)/1024/1024) + "MB" : ""}`,
           behaviorHints: { notWebReady: true, bingeGroup: `mbx-${parsed.subjectId}` }
