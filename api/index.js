@@ -210,7 +210,7 @@ function jsonResp(data, status = 200) {
 }
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "15.4.0",
+  id: "community.movieboxph", version: "15.5.0",
   name: "MovieBox", description: "MovieBox — Movies & Series with Dubbed & Subtitles",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
@@ -276,8 +276,27 @@ export default async function handler(request) {
     const metaMatch = pathname.match(/^\/meta\/(movie|series)\/(.+)\.json$/);
     if (metaMatch) {
       const type = metaMatch[1];
-      const id = metaMatch[2];
-      const parsed = parseId(id);
+      let id = metaMatch[2];
+      let parsed = parseId(id);
+
+      // If IMDB ID (tt...), search MovieBox for it
+      if (!parsed && id.startsWith("tt")) {
+        const imdbId = id;
+        const subjectType = type === "series" ? 2 : 1;
+        const searchData = await apiPost("/subject/search", { keyword: imdbId, page: "1", perPage: "5" });
+        let found = (searchData?.items || []).find(i => i.subjectType === subjectType);
+        if (!found) {
+          // Try searching by IMDB link or external ID
+          const searchData2 = await apiPost("/subject/search", { keyword: imdbId.replace("tt",""), page: "1", perPage: "5" });
+          found = (searchData2?.items || []).find(i => i.subjectType === subjectType);
+        }
+        if (!found) return jsonResp({ meta: null });
+        id = `mbx_${type}_${found.subjectId}`;
+        parsed = parseId(id);
+        if (found.detailPath) detailPathCache.set(String(found.subjectId), found.detailPath);
+        itemCache.set(String(found.subjectId), found);
+      }
+
       if (!parsed) return jsonResp({ meta: null });
 
       const detail = await fetchDetail(parsed.subjectId);
