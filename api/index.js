@@ -3,32 +3,39 @@ const axios = require("axios")
 
 const PORT = process.env.PORT || 7000
 
-const API = "https://movieboxapi.simatwa.dev"
+const API = "https://h5-api.aoneroom.com/wefeed-h5api-bff"
+const STREAM_API = "https://h5.aoneroom.com/wefeed-h5-bff"
 
-function buildPoster(url) {
+const headers = {
+    "User-Agent": "Mozilla/5.0",
+    "Origin": "https://h5.aoneroom.com",
+    "Referer": "https://h5.aoneroom.com/"
+}
+
+function poster(url) {
     if (!url) return null
     if (url.startsWith("http")) return url
-    return "https://image.tmdb.org/t/p/w500" + url
+    return "https://pbcdnw.aoneroom.com" + url
 }
 
 const manifest = {
     id: "community.moviebox",
-    version: "1.0.0",
+    version: "2.0.0",
     name: "MovieBox",
-    description: "MovieBox streaming addon",
+    description: "MovieBox Movies & Series",
     types: ["movie", "series"],
     resources: ["catalog", "meta", "stream"],
     idPrefixes: ["mbx"],
     catalogs: [
         {
             type: "movie",
-            id: "moviebox_movies",
+            id: "movies",
             name: "MovieBox Movies",
             extra: [{ name: "search", isRequired: false }]
         },
         {
             type: "series",
-            id: "moviebox_series",
+            id: "series",
             name: "MovieBox Series",
             extra: [{ name: "search", isRequired: false }]
         }
@@ -37,30 +44,51 @@ const manifest = {
 
 const builder = new addonBuilder(manifest)
 
+function toMeta(item) {
+
+    const type = item.subjectType === 2 ? "series" : "movie"
+
+    return {
+        id: `mbx_${type}_${item.subjectId}`,
+        type,
+        name: item.title,
+        poster: poster(item.cover?.url)
+    }
+}
+
 builder.defineCatalogHandler(async ({ type, extra }) => {
 
     try {
 
-        let url
+        let items = []
 
         if (extra && extra.search) {
-            url = `${API}/search?q=${encodeURIComponent(extra.search)}`
+
+            const res = await axios.post(
+                API + "/subject/search",
+                {
+                    keyword: extra.search,
+                    page: "1",
+                    perPage: 20
+                },
+                { headers }
+            )
+
+            items = res.data.data.items || []
+
         } else {
-            url = `${API}/trending`
+
+            const res = await axios.get(
+                API + "/subject/trending",
+                { headers }
+            )
+
+            items = res.data.data.subjectList || []
         }
 
-        const res = await axios.get(url)
-
-        const items = res.data.results || []
-
         const metas = items
-            .filter(i => type === "movie" ? i.type === "movie" : i.type === "series")
-            .map(i => ({
-                id: `mbx_${i.type}_${i.id}`,
-                type: i.type,
-                name: i.title,
-                poster: buildPoster(i.poster)
-            }))
+            .map(toMeta)
+            .filter(m => m.type === type)
 
         return { metas }
 
@@ -73,78 +101,51 @@ builder.defineCatalogHandler(async ({ type, extra }) => {
 
 })
 
-builder.defineMetaHandler(async ({ type, id }) => {
+builder.defineMetaHandler(async ({ id }) => {
 
-    try {
+    const parts = id.split("_")
+    const type = parts[1]
+    const subjectId = parts[2]
 
-        const parts = id.split("_")
-        const mediaId = parts[2]
-
-        const res = await axios.get(`${API}/info?id=${mediaId}`)
-
-        const data = res.data
-
-        const meta = {
+    return {
+        meta: {
             id,
             type,
-            name: data.title,
-            poster: buildPoster(data.poster),
-            description: data.description
+            name: "MovieBox Item"
         }
-
-        if (type === "series") {
-
-            meta.videos = []
-
-            data.episodes.forEach(ep => {
-
-                meta.videos.push({
-                    id: `${id}:${ep.season}:${ep.episode}`,
-                    season: ep.season,
-                    episode: ep.episode,
-                    title: ep.title
-                })
-
-            })
-        }
-
-        return { meta }
-
-    } catch (e) {
-
-        console.log("Meta error:", e.message)
-
-        return { meta: null }
     }
 
 })
 
-builder.defineStreamHandler(async ({ id }) => {
+builder.defineStreamHandler(async ({ type, id }) => {
 
     try {
 
         const parts = id.split(":")
-
         const base = parts[0]
 
-        const season = parts[1]
-        const episode = parts[2]
+        const subjectId = base.split("_")[2]
 
-        const mediaId = base.split("_")[2]
+        const season = parts[1] || 0
+        const episode = parts[2] || 0
 
-        let url
+        const res = await axios.get(
+            STREAM_API + "/web/subject/play",
+            {
+                params: {
+                    subjectId,
+                    se: season,
+                    ep: episode
+                },
+                headers
+            }
+        )
 
-        if (season && episode) {
-            url = `${API}/stream?id=${mediaId}&season=${season}&episode=${episode}`
-        } else {
-            url = `${API}/stream?id=${mediaId}`
-        }
+        const raw = res.data?.data?.streams || []
 
-        const res = await axios.get(url)
-
-        const streams = (res.data.streams || []).map(s => ({
+        const streams = raw.map(s => ({
             name: "MovieBox",
-            title: s.quality || "Stream",
+            title: s.resolutions + "p",
             url: s.url
         }))
 
@@ -161,4 +162,4 @@ builder.defineStreamHandler(async ({ id }) => {
 
 serveHTTP(builder.getInterface(), { port: PORT })
 
-console.log("Addon running at http://localhost:" + PORT)
+console.log("MovieBox addon running on port " + PORT)
