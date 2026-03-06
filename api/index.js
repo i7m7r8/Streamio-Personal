@@ -206,7 +206,7 @@ function jsonResp(data, status = 200) {
 }
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "14.5.0",
+  id: "community.movieboxph", version: "14.6.0",
   name: "MovieBox", description: "MovieBox — Movies & Series",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
@@ -372,32 +372,59 @@ export default async function handler(request) {
       const rawStreams = await fetchStreams(parsed.subjectId, finalDetailPath, se, ep);
       if (!rawStreams.length) return jsonResp({ streams: [] });
 
+      // Fetch subtitles from first stream
+      const captions = await fetchCaptions(rawStreams[0].id, parsed.subjectId);
+      const subtitles = captions.map(c => ({ id: c.id, url: c.url, lang: c.lan, label: c.lanName }));
+
+      // Get item title — fetch detail if not cached
+      let cachedItem = itemCache.get(parsed.subjectId);
+      if (!cachedItem) {
+        const det = await fetch(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/detail?subjectId=${parsed.subjectId}`, {
+          headers: { ...BASE_HEADERS, "Cookie": buildCookieHeader(_cookies) }
+        }).then(r => r.json()).catch(() => null);
+        if (det?.data?.subject) {
+          cachedItem = det.data.subject;
+          itemCache.set(parsed.subjectId, cachedItem);
+          if (cachedItem.detailPath) detailPathCache.set(parsed.subjectId, cachedItem.detailPath);
+        }
+      }
+      const itemTitle = cachedItem?.title || "";
+
+      // Find dubbed versions in parallel
+      const dubbedSubjects = itemTitle ? await findDubbedSubjects(itemTitle, type) : [];
+      const dubbedResults = await Promise.all(
+        dubbedSubjects.map(async (dub) => ({
+          label: dub.label,
+          streams: await fetchStreams(dub.subjectId, dub.detailPath, se, ep)
+        }))
+      );
+
       const qualityOrder = { "1080": 0, "720": 1, "480": 2, "360": 3 };
-      const sorted = rawStreams
-        .filter(s => s.url)
-        .sort((a, b) => (qualityOrder[a.resolutions] ?? 99) - (qualityOrder[b.resolutions] ?? 99));
-
-      // Fetch captions from first stream
-      const captions = sorted.length > 0 ? await fetchCaptions(sorted[0].id, parsed.subjectId) : [];
-      const subtitles = captions.map(c => ({
-        id: c.id,
-        url: c.url,
-        lang: c.lan,
-        label: c.lanName,
-      }));
-
       const host = request.headers.get("host");
-      const streams = sorted.map((s, i) => {
+
+      const buildStreamEntry = (s, label) => {
         const quality = s.resolutions ? `${s.resolutions}p` : "HD";
         const sizeMB = s.size ? ` · ${Math.round(parseInt(s.size)/1024/1024)}MB` : "";
         return {
           url: `https://${host}/proxy?url=${encodeURIComponent(s.url)}`,
-          name: "MovieBox",
-          title: `${quality}${sizeMB} · Source ${i + 1}`,
+          name: "MovieBox 🎬",
+          title: `${quality}${sizeMB} · ${label}`,
           subtitles,
           behaviorHints: { notWebReady: true, bingeGroup: `mbx-${parsed.subjectId}` }
         };
-      });
+      };
+
+      const streams = rawStreams
+        .filter(s => s.url)
+        .sort((a, b) => (qualityOrder[a.resolutions] ?? 99) - (qualityOrder[b.resolutions] ?? 99))
+        .map(s => buildStreamEntry(s, "Original Audio"));
+
+      for (const { label, streams: dubStreams } of dubbedResults) {
+        dubStreams
+          .filter(s => s.url)
+          .sort((a, b) => (qualityOrder[a.resolutions] ?? 99) - (qualityOrder[b.resolutions] ?? 99))
+          .forEach(s => streams.push(buildStreamEntry(s, label)));
+      }
 
       return jsonResp({ streams });
     }
