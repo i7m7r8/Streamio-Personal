@@ -1,10 +1,63 @@
 export const config = { runtime: "edge" };
 
 const CONFIG = {
-  API_BASE:   "https://h5-api.aoneroom.com",
-  BFF:        "/wefeed-h5api-bff",
-  PAGE_HOST:  "h5.aoneroom.com",
-  PAGE_SIZE:  24,
+  API_BASE:    "https://h5-api.aoneroom.com",
+  BFF:         "/wefeed-h5api-bff",
+  PAGE_HOST:   "h5.aoneroom.com",
+  STREAM_HOST: "https://h5.aoneroom.com",
+  STREAM_BFF:  "/wefeed-h5-bff",
+  PAGE_SIZE:   24,
+  PH_IP:       "112.198.0.1",
+};
+
+// Persistent cookie store across warm instances
+let _cookies = {};
+let _cookieFetchedAt = 0;
+
+function buildCookieHeader(cookies) {
+  return Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join("; ");
+}
+
+function parseCookies(setCookieHeader) {
+  const cookies = {};
+  if (!setCookieHeader) return cookies;
+  const parts = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+  for (const part of parts) {
+    const [kv] = part.split(";");
+    const eq = kv.indexOf("=");
+    if (eq > 0) cookies[kv.slice(0, eq).trim()] = kv.slice(eq + 1).trim();
+  }
+  return cookies;
+}
+
+async function ensureCookies() {
+  if (Object.keys(_cookies).length > 0 && Date.now() - _cookieFetchedAt < 25 * 60 * 1000) return;
+  try {
+    const res = await fetch(`${CONFIG.STREAM_HOST}/wefeed-h5-bff/app/get-latest-app-pkgs?app_name=moviebox`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
+        "X-Forwarded-For": CONFIG.PH_IP,
+        "X-Real-IP": CONFIG.PH_IP,
+        "CF-IPCountry": "PH",
+        "CF-Connecting-IP": CONFIG.PH_IP,
+      }
+    });
+    const setCookie = res.headers.get("set-cookie") || "";
+    _cookies = parseCookies(setCookie);
+    _cookieFetchedAt = Date.now();
+    console.log("Cookies:", JSON.stringify(_cookies));
+  } catch (e) {
+    console.error("Cookie fetch failed:", e.message);
+  }
+}
+
+const BASE_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:137.0) Gecko/20100101 Firefox/137.0",
+  "Accept": "application/json",
+  "X-Forwarded-For": CONFIG.PH_IP,
+  "X-Real-IP": CONFIG.PH_IP,
+  "CF-IPCountry": "PH",
+  "CF-Connecting-IP": CONFIG.PH_IP,
 };
 
 const CATALOG_HEADERS = {
@@ -39,15 +92,43 @@ async function apiPost(endpoint, body = {}) {
   } catch { return null; }
 }
 
+const detailPathCache = new Map();
+const itemCache = new Map();
+
+async function fetchStreams(subjectId, detailPath, se, ep) {
+  await ensureCookies();
+  const referer = `${CONFIG.STREAM_HOST}/movies/${detailPath || subjectId}`;
+  try {
+    const url = new URL(`${CONFIG.STREAM_HOST}${CONFIG.STREAM_BFF}/web/subject/play`);
+    url.searchParams.set("subjectId", subjectId);
+    url.searchParams.set("se", se);
+    url.searchParams.set("ep", ep);
+    const res = await fetch(url.toString(), {
+      headers: {
+        ...BASE_HEADERS,
+        "Referer": referer,
+        "Origin": CONFIG.STREAM_HOST,
+        "Cookie": buildCookieHeader(_cookies),
+      }
+    });
+    const d = await res.json();
+    console.log(`Stream response: code=${d?.code} hasResource=${d?.data?.hasResource} streams=${d?.data?.streams?.length}`);
+    if (d?.code !== 0 || !d?.data?.streams?.length) return [];
+    return d.data.streams;
+  } catch (e) {
+    console.error("fetchStreams error:", e.message);
+    return [];
+  }
+}
+
 function normalizePoster(url) {
   if (!url) return null;
   return url.startsWith("http") ? url : `https://pbcdnw.aoneroom.com${url}`;
 }
 
-const itemCache = new Map();
-
 function toMeta(item, type) {
   const subjectId = String(item.subjectId || "");
+  if (item.detailPath) detailPathCache.set(subjectId, item.detailPath);
   itemCache.set(subjectId, item);
   return {
     id: `mbx_${type}_${subjectId}`, type,
@@ -75,7 +156,7 @@ function jsonResp(data, status = 200) {
 }
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "13.0.0",
+  id: "community.movieboxph", version: "14.0.0",
   name: "MovieBox", description: "MovieBox — Movies & Series",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
@@ -89,11 +170,9 @@ const MANIFEST = {
   idPrefixes: ["mbx_"],
 };
 
-export default async function handler(request, context) {
+export default async function handler(request) {
   const url = new URL(request.url);
   const pathname = url.pathname;
-  // Get TERMUX_URL from env
-  const TERMUX_URL = (typeof process !== 'undefined' ? process.env.TERMUX_URL : null) || "";
 
   if (request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*" } });
@@ -105,7 +184,8 @@ export default async function handler(request, context) {
 
     // Debug
     if (pathname === "/debug") {
-      return jsonResp({ termuxUrl: TERMUX_URL || "NOT SET", version: "13.0.0" });
+      await ensureCookies();
+      return jsonResp({ version: "14.0.0", cookies: Object.keys(_cookies) });
     }
 
     // Catalog
@@ -166,18 +246,43 @@ export default async function handler(request, context) {
       return jsonResp({ meta });
     }
 
-    // Stream — proxy to Termux
+    // Stream
     const streamMatch = pathname.match(/^\/stream\/(movie|series)\/(.+)\.json$/);
     if (streamMatch) {
-      if (!TERMUX_URL) return jsonResp({ streams: [], error: "TERMUX_URL not set" });
-      try {
-        const termuxPath = `/stream/${streamMatch[1]}/${streamMatch[2]}.json`;
-        const res = await fetch(`${TERMUX_URL.replace(/\/$/, "")}${termuxPath}`, { signal: AbortSignal.timeout(20000) });
-        const data = await res.json();
-        return jsonResp(data);
-      } catch(e) {
-        return jsonResp({ streams: [], error: e.message });
+      const type = streamMatch[1];
+      const id = decodeURIComponent(streamMatch[2]);
+      const parts = id.split(":");
+      const parsed = parseId(parts[0]);
+      if (!parsed) return jsonResp({ streams: [] });
+
+      const se = type === "movie" ? 0 : parseInt(parts[1] || 1);
+      const ep = type === "movie" ? 0 : parseInt(parts[2] || 1);
+      const detailPath = detailPathCache.get(parsed.subjectId) || "";
+
+      // If detailPath not cached, fetch trending to populate cache
+      if (!detailPath) {
+        const trendData = await apiGet("/subject/trending");
+        (trendData?.subjectList || []).forEach(i => {
+          if (i.detailPath) detailPathCache.set(String(i.subjectId), i.detailPath);
+        });
       }
+
+      const finalDetailPath = detailPathCache.get(parsed.subjectId) || parsed.subjectId;
+      const rawStreams = await fetchStreams(parsed.subjectId, finalDetailPath, se, ep);
+      if (!rawStreams.length) return jsonResp({ streams: [] });
+
+      const qualityOrder = { "1080": 0, "720": 1, "480": 2, "360": 3 };
+      const streams = rawStreams
+        .filter(s => s.url)
+        .sort((a, b) => (qualityOrder[a.resolutions] ?? 99) - (qualityOrder[b.resolutions] ?? 99))
+        .map(s => ({
+          url: s.url,
+          name: "MovieBox",
+          title: `${s.resolutions ? s.resolutions + "p" : "HD"}${s.size ? " · " + Math.round(parseInt(s.size)/1024/1024) + "MB" : ""}`,
+          behaviorHints: { notWebReady: true, bingeGroup: `mbx-${parsed.subjectId}` }
+        }));
+
+      return jsonResp({ streams });
     }
 
     return new Response("Not found", { status: 404 });
