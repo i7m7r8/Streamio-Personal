@@ -206,7 +206,7 @@ function jsonResp(data, status = 200) {
 }
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "14.8.0",
+  id: "community.movieboxph", version: "14.9.0",
   name: "MovieBox", description: "MovieBox — Movies & Series",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
@@ -296,7 +296,7 @@ export default async function handler(request) {
 
       if (type === "series") {
         meta.videos = [];
-        const seasons = detail?.data?.seasons || [];
+        const seasons = detail?.data?.resource?.seasons || detail?.data?.seasons || [];
         if (seasons.length > 0) {
           for (const season of seasons) {
             const maxEp = season.maxEp || 1;
