@@ -24,7 +24,10 @@ function cacheSet(key, data) { cache.set(key, { data, ts: Date.now() }); }
 
 // ── Cookies ────────────────────────────────────────────────
 async function getCookies() {
-  if (CONFIG._cookies !== null && (Date.now() - CONFIG._cookieFetchedAt < 30 * 60 * 1000))
+  // Note: serverless functions are stateless, but module-level cache
+  // persists within the same warm instance (usually a few minutes)
+  if (CONFIG._cookies !== null && CONFIG._cookies !== undefined &&
+      (Date.now() - CONFIG._cookieFetchedAt < 25 * 60 * 1000))
     return CONFIG._cookies;
   try {
     const res = await axios.get(
@@ -284,11 +287,11 @@ module.exports = async (req, res) => {
       const parsed = parseId(baseId);
       if (!parsed) { jsonResp(res, { streams: [] }); return; }
 
-      const detailPath = detailPathCache.get(parsed.subjectId) || "";
+      // Serverless: no cache, use empty detailPath (works fine)
       const se = type === "movie" ? 0 : season;
       const ep = type === "movie" ? 0 : episode;
 
-      const rawStreams = await fetchStreams(parsed.subjectId, detailPath, se, ep);
+      const rawStreams = await fetchStreams(parsed.subjectId, "", se, ep);
       if (!rawStreams.length) { jsonResp(res, { streams: [] }); return; }
 
       const qualityOrder = { "1080": 0, "720": 1, "480": 2, "360": 3 };
