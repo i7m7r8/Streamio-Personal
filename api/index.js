@@ -290,7 +290,7 @@ module.exports = async (req, res) => {
     const streamMatch = pathname.match(/^\/stream\/(movie|series)\/(.+)\.json$/);
     if (streamMatch) {
       const type = streamMatch[1];
-      const id = streamMatch[2];
+      const id = decodeURIComponent(streamMatch[2]);
       const parts = id.split(":");
       const baseId = parts[0];
       const season = parts[1] !== undefined ? parseInt(parts[1]) : 0;
