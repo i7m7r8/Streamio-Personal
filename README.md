@@ -1,4 +1,4 @@
-# MovieBox PH — Stremio Addon v2
+# MovieBox PH — Stremio Addon v10
 
 API-based addon (no cheerio/puppeteer needed).
 
