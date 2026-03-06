@@ -232,9 +232,10 @@ const SERIES_GENRES = [
 const ALL_GENRES = [...MOVIE_GENRES, ...SERIES_GENRES];
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "15.0.0",
+  id: "community.movieboxph", version: "15.1.0",
   name: "MovieBox 🎬", description: "MovieBox — Movies & Series with Genres, Dubbed & Subtitles",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
+  behaviorHints: { adult: false, p2p: false, configurable: false },
   catalogs: [
     ...MOVIE_GENRES.map(g => ({
       type: "movie", id: g.id, name: g.name,
@@ -245,7 +246,11 @@ const MANIFEST = {
       extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
     })),
   ],
-  resources: ["catalog", "meta", "stream"],
+  resources: [
+    { name: "catalog", types: ["movie", "series"], idPrefixes: ["mbx_"] },
+    { name: "meta",    types: ["movie", "series"], idPrefixes: ["mbx_"] },
+    { name: "stream",  types: ["movie", "series"], idPrefixes: ["mbx_"] },
+  ],
   types: ["movie", "series"],
   idPrefixes: ["mbx_"],
 };
@@ -289,8 +294,17 @@ export default async function handler(request) {
         const data = await apiPost("/subject/search", { keyword: extra.search, page: String(page), perPage: String(CONFIG.PAGE_SIZE) });
         items = (data?.items || []).filter(i => i.subjectType === subjectType);
       } else if (genre?.keyword === "trending") {
-        const data = await apiGet("/subject/trending");
-        items = (data?.subjectList || []).filter(i => i.subjectType === subjectType);
+        if (subjectType === 2) {
+          const data = await apiGet("/subject/trending");
+          items = (data?.subjectList || []).filter(i => i.subjectType === 2);
+        } else {
+          const data = await apiPost("/subject/search-rank", {});
+          items = (data?.items || data?.subjectList || []).filter(i => i.subjectType === 1);
+          if (!items.length) {
+            const d2 = await apiPost("/subject/search", { keyword: "popular", page: String(page), perPage: String(CONFIG.PAGE_SIZE) });
+            items = (d2?.items || []).filter(i => i.subjectType === 1);
+          }
+        }
       } else if (genre) {
         const data = await apiPost("/subject/search", { keyword: genre.keyword, page: String(page), perPage: String(CONFIG.PAGE_SIZE) });
         items = (data?.items || []).filter(i => i.subjectType === subjectType);
