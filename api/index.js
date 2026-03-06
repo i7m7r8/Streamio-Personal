@@ -232,7 +232,7 @@ const SERIES_GENRES = [
 const ALL_GENRES = [...MOVIE_GENRES, ...SERIES_GENRES];
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "15.1.0",
+  id: "community.movieboxph", version: "15.2.0",
   name: "MovieBox 🎬", description: "MovieBox — Movies & Series with Genres, Dubbed & Subtitles",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   behaviorHints: { adult: false, p2p: false, configurable: false },
@@ -246,11 +246,7 @@ const MANIFEST = {
       extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
     })),
   ],
-  resources: [
-    { name: "catalog", types: ["movie", "series"], idPrefixes: ["mbx_"] },
-    { name: "meta",    types: ["movie", "series"], idPrefixes: ["mbx_"] },
-    { name: "stream",  types: ["movie", "series"], idPrefixes: ["mbx_"] },
-  ],
+  resources: ["catalog", "meta", "stream"],
   types: ["movie", "series"],
   idPrefixes: ["mbx_"],
 };
