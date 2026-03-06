@@ -136,6 +136,41 @@ async function fetchCaptions(streamId, subjectId) {
   } catch { return []; }
 }
 
+const DUB_LANGS = [
+  { keyword: "hindi",   label: "Hindi Dub" },
+  { keyword: "arabic",  label: "Arabic Dub" },
+  { keyword: "french",  label: "French Dub" },
+  { keyword: "turkish", label: "Turkish Dub" },
+  { keyword: "urdu",    label: "Urdu Dub" },
+  { keyword: "spanish", label: "Spanish Dub" },
+];
+
+async function findDubbedSubjects(title, type) {
+  const subjectType = type === "series" ? 2 : 1;
+  const results = [];
+  await Promise.all(DUB_LANGS.map(async ({ keyword, label }) => {
+    try {
+      const res = await fetch(CONFIG.API_BASE + CONFIG.BFF + "/subject/search", {
+        method: "POST",
+        headers: { ...CATALOG_HEADERS, "Content-Type": "application/json" },
+        body: JSON.stringify({ host: CONFIG.PAGE_HOST, keyword: `${title} ${keyword}`, page: "1", perPage: "3" })
+      });
+      const d = await res.json();
+      if (d?.code !== 0) return;
+      const items = (d.data?.items || []).filter(i =>
+        i.subjectType === subjectType &&
+        i.title?.toLowerCase().includes(keyword) &&
+        i.title?.toLowerCase().includes(title.toLowerCase().slice(0, 6))
+      );
+      for (const item of items.slice(0, 1)) {
+        if (item.detailPath) detailPathCache.set(String(item.subjectId), item.detailPath);
+        results.push({ subjectId: String(item.subjectId), label, detailPath: item.detailPath || "", title: item.title });
+      }
+    } catch {}
+  }));
+  return results;
+}
+
 function normalizePoster(url) {
   if (!url) return null;
   return url.startsWith("http") ? url : `https://pbcdnw.aoneroom.com${url}`;
@@ -171,7 +206,7 @@ function jsonResp(data, status = 200) {
 }
 
 const MANIFEST = {
-  id: "community.movieboxph", version: "14.3.0",
+  id: "community.movieboxph", version: "14.4.0",
   name: "MovieBox", description: "MovieBox — Movies & Series",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
