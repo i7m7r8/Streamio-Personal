@@ -20,7 +20,7 @@ function poster(url) {
 
 const manifest = {
     id: "community.moviebox",
-    version: "2.0.0",
+    version: "3.0.0",
     name: "MovieBox",
     description: "MovieBox Movies & Series",
     types: ["movie", "series"],
@@ -67,6 +67,7 @@ builder.defineCatalogHandler(async ({ type, extra }) => {
             const res = await axios.post(
                 API + "/subject/search",
                 {
+                    host: "h5.aoneroom.com",
                     keyword: extra.search,
                     page: "1",
                     perPage: 20
@@ -74,16 +75,21 @@ builder.defineCatalogHandler(async ({ type, extra }) => {
                 { headers }
             )
 
-            items = res.data.data.items || []
+            items = res.data?.data?.items || []
 
         } else {
 
             const res = await axios.get(
                 API + "/subject/trending",
-                { headers }
+                {
+                    params: {
+                        host: "h5.aoneroom.com"
+                    },
+                    headers
+                }
             )
 
-            items = res.data.data.subjectList || []
+            items = res.data?.data?.subjectList || []
         }
 
         const metas = items
@@ -105,7 +111,6 @@ builder.defineMetaHandler(async ({ id }) => {
 
     const parts = id.split("_")
     const type = parts[1]
-    const subjectId = parts[2]
 
     return {
         meta: {
@@ -117,7 +122,7 @@ builder.defineMetaHandler(async ({ id }) => {
 
 })
 
-builder.defineStreamHandler(async ({ type, id }) => {
+builder.defineStreamHandler(async ({ id }) => {
 
     try {
 
@@ -133,6 +138,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
             STREAM_API + "/web/subject/play",
             {
                 params: {
+                    host: "h5.aoneroom.com",
                     subjectId,
                     se: season,
                     ep: episode
@@ -145,7 +151,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
         const streams = raw.map(s => ({
             name: "MovieBox",
-            title: s.resolutions + "p",
+            title: (s.resolutions || "HD") + "p",
             url: s.url
         }))
 
