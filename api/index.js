@@ -157,6 +157,33 @@ async function findDubbedSubjects(title, type) {
   return results;
 }
 
+async function fetchTVMazeEpisodes(title) {
+  try {
+    // Search for show
+    const search = await fetch(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(title)}`)
+      .then(r => r.json()).catch(() => []);
+    if (!search.length) return null;
+    const showId = search[0].show.id;
+
+    // Get all episodes
+    const episodes = await fetch(`https://api.tvmaze.com/shows/${showId}/episodes`)
+      .then(r => r.json()).catch(() => []);
+
+    // Build map: "S1E1" -> { title, airdate, thumbnail, summary }
+    const map = {};
+    for (const ep of episodes) {
+      const key = `S${ep.season}E${ep.number}`;
+      map[key] = {
+        title: ep.name,
+        airdate: ep.airdate,
+        thumbnail: ep.image?.medium || null,
+        overview: ep.summary ? ep.summary.replace(/<[^>]+>/g, '') : "",
+      };
+    }
+    return map;
+  } catch { return null; }
+}
+
 function normalizePoster(url) {
   if (!url) return null;
   return url.startsWith("http") ? url : `https://pbcdnw.aoneroom.com${url}`;
@@ -193,7 +220,7 @@ function jsonResp(data, status = 200) {
 
 // ---- Exactly v14 manifest ----
 const MANIFEST = {
-  id: "community.movieboxph", version: "16.0.0",
+  id: "community.movieboxph", version: "16.2.0",
   name: "MovieBox", description: "MovieBox — Movies & Series with Dubbed & Subtitles",
   logo: "https://h5-static.aoneroom.com/oneroomStatic/public/favicon.ico",
   catalogs: [
@@ -220,7 +247,7 @@ export default async function handler(request) {
 
     if (pathname === "/debug") {
       await ensureCookies();
-      return jsonResp({ version: "16.0.0", cookies: Object.keys(_cookies) });
+      return jsonResp({ version: "16.2.0", cookies: Object.keys(_cookies) });
     }
 
     // Catalog — same as v14
@@ -281,14 +308,23 @@ export default async function handler(request) {
       if (type === "series") {
         meta.videos = [];
         const seasons = detail?.data?.resource?.seasons || [];
+        const showTitle = subjectData?.title || item?.title || "";
+
+        // Fetch TVMaze episode info (thumbnail, airdate, title)
+        const tvmazeMap = showTitle ? await fetchTVMazeEpisodes(showTitle) : null;
+
         if (seasons.length > 0) {
           for (const season of seasons) {
             for (let ep = 1; ep <= (season.maxEp || 1); ep++) {
+              const key = `S${season.se}E${ep}`;
+              const tvEp = tvmazeMap?.[key];
               meta.videos.push({
                 id: `${id}:${season.se}:${ep}`,
-                title: `S${season.se}E${ep}`,
+                title: tvEp?.title ? `${key} - ${tvEp.title}` : key,
                 season: season.se, episode: ep,
-                released: new Date(0).toISOString()
+                released: tvEp?.airdate ? new Date(tvEp.airdate).toISOString() : new Date(0).toISOString(),
+                thumbnail: tvEp?.thumbnail || null,
+                overview: tvEp?.overview || "",
               });
             }
           }
@@ -349,20 +385,25 @@ export default async function handler(request) {
       const finalDetailPath = detailPathCache.get(parsed.subjectId) || parsed.subjectId;
       const itemTitle = subjectDetail?.title || itemCache.get(parsed.subjectId)?.title || "";
 
-      const [rawStreams, dubbedSubjects] = await Promise.all([
-        fetchStreams(parsed.subjectId, finalDetailPath, se, ep),
-        itemTitle ? findDubbedSubjects(itemTitle, type) : Promise.resolve([])
-      ]);
-
+      // Fetch original streams first — this must succeed
+      const rawStreams = await fetchStreams(parsed.subjectId, finalDetailPath, se, ep);
       if (!rawStreams.length) return jsonResp({ streams: [] });
 
-      const [captions, ...dubbedStreamArrays] = await Promise.all([
+      // Fetch captions + dubbed in parallel with timeout safety
+      const [captions, dubbedSubjects] = await Promise.all([
         fetchCaptions(rawStreams[0].id, parsed.subjectId),
-        ...dubbedSubjects.map(dub => fetchStreams(dub.subjectId, dub.detailPath, se, ep))
+        itemTitle
+          ? findDubbedSubjects(itemTitle, type).catch(() => [])
+          : Promise.resolve([])
       ]);
+
+      const dubbedStreamArrays = await Promise.all(
+        dubbedSubjects.map(dub => fetchStreams(dub.subjectId, dub.detailPath, se, ep).catch(() => []))
+      );
 
       const subtitles = captions.map(c => ({ id: c.id, url: c.url, lang: c.lan, label: c.lanName }));
       const dubbedResults = dubbedSubjects.map((dub, i) => ({ label: dub.label, streams: dubbedStreamArrays[i] || [] }));
+
 
       const qualityOrder = { "1080": 0, "720": 1, "480": 2, "360": 3 };
       const host = request.headers.get("host");
